@@ -73,6 +73,11 @@ export class SubBucketRepository extends Repository<SubBucket, number> {
     return entity;
   }
 
+  save(e: SubBucket) {
+    if (e.originalKey) this.context.transaction.del(`${this.prefix}${e.originalKey.toString()}`);
+    super.save(e);
+  }
+
   fromRedis(obj: Record<string, string>, key: number) {
     const cards: Record<string, number> = {};
     const matches: Record<string, number> = {};

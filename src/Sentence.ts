@@ -6,6 +6,7 @@ const paddedHex = (num: number, len: number) => num.toString(16).padStart(len, '
 class Sentence implements Entity<string> {
   public key: string;
   public subKey: string;
+  private _additions: SentenceMatch[];
   constructor(
     public context: RedisContext,
     public sentence: string,
@@ -15,6 +16,7 @@ class Sentence implements Entity<string> {
     const { bucket, subKey } = Sentence.createKey(sentence);
     this.key = bucket;
     this.subKey = subKey;
+    this._additions = [];
   }
 
   static createKey(sentence: string) {
@@ -25,17 +27,17 @@ class Sentence implements Entity<string> {
   }
 
   get matches(): readonly SentenceMatch[] {
-    return this._matches;
+    return this._matches.concat(this._additions);
   }
 
   addMatch(match: SentenceMatch) {
     this.updated = true;
-    this._matches.push(match);
+    this._additions.push(match);
   }
 
   toRedis() {
     return {
-      matches: this.matches
+      matches: this._additions
         .map(({ cardId, index }) => this.subKey + paddedHex(cardId, 8) + paddedHex(index, 4))
         .join(''),
     };

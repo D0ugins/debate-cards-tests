@@ -1,6 +1,6 @@
 import { createClient } from 'redis';
 import { PrismaClient } from '@prisma/client';
-import { groupBy, map, max, maxBy, min, uniq } from 'lodash';
+import _, { groupBy, map, max, maxBy, min, uniq } from 'lodash';
 
 export const db = new PrismaClient();
 export const redis = createClient({
@@ -65,7 +65,6 @@ export abstract class Repository<E extends Entity<K>, K extends string | number>
   public save(e: E): unknown {
     e.updated = false;
     const key = e.key.toString();
-    if (e.originalKey) this.context.transaction.del(`${this.prefix}${e.originalKey.toString()}`);
     return Object.entries(e.toRedis()).map(
       ([subKey, value]) => value && this.context.transaction.hSet(`${this.prefix}${key}`, subKey, value),
     );
@@ -87,17 +86,17 @@ const loadSentences = async (id: number) => {
 
   return getSentences(card.fulltext);
 };
-type MatchInfo = { cardLen: number; indexes: number[] };
-type MatchPair = { cardId: number; a: MatchInfo; b: MatchInfo };
+type MatchInfo = { cardLen: number; min: number; max: number };
+type MatchPair = { a: MatchInfo; b: MatchInfo };
 
-const checkMatch = (a: MatchInfo, b: MatchInfo) => {
-  const insideMatch =
-    a.cardLen > 3 && a.cardLen - ((max(a.indexes) ?? 0) + 1 - (min(a.indexes) ?? 0)) <= INSIDE_TOLERANCE; // If the enterity of A matches
-  return (
-    insideMatch || ((min(a.indexes) ?? 0) <= EDGE_TOLERANCE && b.cardLen - (max(b.indexes) ?? 0) <= EDGE_TOLERANCE)
-  ); // If matches the start of A and the end of B
+const checkMatch = (
+  { cardLen: aLen, min: aMin, max: aMax }: MatchInfo,
+  { cardLen: bLen, min: bMin, max: bMax }: MatchInfo,
+) => {
+  const insideMatch = aLen > 3 && aLen - (aMax + 1 - aMin) <= INSIDE_TOLERANCE; // If the enterity of A matches
+  return insideMatch || (aMin <= EDGE_TOLERANCE && bLen - bMax <= EDGE_TOLERANCE); // If matches the start of A and the end of B
 };
-// Check in both orders
+// // Check in both orders
 const isMatch = (info: MatchPair) => checkMatch(info.a, info.b) || checkMatch(info.b, info.a);
 
 async function getMatching(context: RedisContext, cardId: number) {
@@ -110,41 +109,64 @@ async function getMatching(context: RedisContext, cardId: number) {
     sentencesPerCard seems to be roughly 30
     With 25 concurrent deduplications happening, and 2^20 buckets, probability is around 0.98
   */
-  const matches = await Promise.all(sentences.map((s) => context.sentenceRepository.get(s)));
-  const matchIndexes = map(matches, 'matches')
-    .flatMap((sentence, i) => sentence.map(({ cardId, index }) => ({ cardId, aIndex: i, bIndex: index })))
-    .filter((match) => match.cardId !== cardId);
-
-  const matchInfo: MatchPair[] = await Promise.all(
-    map(groupBy(matchIndexes, 'cardId'), async (match, cardId) => ({
-      cardId: +cardId,
-      a: { indexes: map(match, 'aIndex'), cardLen: matches.length },
-      b: { indexes: map(match, 'bIndex'), cardLen: (await context.cardInfoRepository.get(+cardId)).length },
-    })),
+  const sentenceEntities = await Promise.all(sentences.map((s) => context.sentenceRepository.get(s)));
+  const cardLens: Record<number, number> = {};
+  await Promise.all(
+    _(sentenceEntities)
+      .map('matches')
+      .flatten()
+      .map('cardId')
+      .uniq()
+      .map(async (id) => (cardLens[id] = (await context.cardLengthRepository.get(id)).length))
+      .value(),
   );
-  return map(matchInfo.filter(isMatch), 'cardId');
+  const matchInfo: Record<string, MatchPair> = {};
+  for (let aIndex = 0; aIndex < sentenceEntities.length; aIndex++) {
+    const matches = sentenceEntities[aIndex].matches;
+    for (const { cardId, index: bIndex } of matches) {
+      if (!(cardId in matchInfo))
+        matchInfo[cardId] = {
+          a: { cardLen: sentenceEntities.length, min: aIndex, max: aIndex },
+          b: { cardLen: cardLens[cardId], min: bIndex, max: bIndex },
+        };
+      else {
+        matchInfo[cardId].a.max = aIndex;
+        matchInfo[cardId].b.max = bIndex;
+      }
+    }
+  }
+
+  const matches = [];
+  for (const id in matchInfo) {
+    if (isMatch(matchInfo[id])) matches.push(id);
+  }
+  return matches;
 }
 
 import { SubBucketEntity, SubBucketRepository } from './SubBucket';
-import { CardInfoRepository } from './CardInfo';
+import { CardSubBucketRepository } from './CardSubBucket';
 import { SentenceRepository } from './Sentence';
+import { CardLengthRepository } from './CardLength';
 export class RedisContext {
   sentenceRepository: SentenceRepository;
-  cardInfoRepository: CardInfoRepository;
+  cardLengthRepository: CardLengthRepository;
+  cardSubBucketRepository: CardSubBucketRepository;
   subBucketRepository: SubBucketRepository;
   transaction: RedisTransaction;
 
   constructor(public client: typeof redis) {
     this.transaction = client.multi();
     this.sentenceRepository = new SentenceRepository(this);
-    this.cardInfoRepository = new CardInfoRepository(this);
+    this.cardLengthRepository = new CardLengthRepository(this);
+    this.cardSubBucketRepository = new CardSubBucketRepository(this);
     this.subBucketRepository = new SubBucketRepository(this);
   }
 
   finish(save: boolean = true) {
     if (save) {
       this.subBucketRepository.saveAll();
-      this.cardInfoRepository.saveAll();
+      this.cardLengthRepository.saveAll();
+      this.cardSubBucketRepository.saveAll();
       this.sentenceRepository.saveAll();
     }
     return this.transaction.exec();
@@ -154,7 +176,7 @@ export class RedisContext {
 async function processCard(context: RedisContext, id: number, sentences: string[]) {
   const matchedCards = await getMatching(context, id);
   const bucketCandidates = uniq(
-    await Promise.all(matchedCards.map(async (id) => (await context.cardInfoRepository.get(id)).subBucket)),
+    await Promise.all(matchedCards.map(async (id) => (await context.cardSubBucketRepository.get(id)).subBucket)),
   );
   bucketCandidates.forEach((b) => b.setMatches(id, matchedCards));
   const matchedBuckets = bucketCandidates.filter((b) => b.doesBucketMatch(matchedCards));
@@ -167,7 +189,7 @@ async function processCard(context: RedisContext, id: number, sentences: string[
     addBucket.addCard(id, matchedCards);
   }
 
-  context.cardInfoRepository.create(id, sentences.length, addBucket);
+  context.cardSubBucketRepository.create(id, sentences.length, addBucket);
   const sentenceEntities = await Promise.all(sentences.map((s) => context.sentenceRepository.get(s)));
   sentenceEntities.forEach((entity, i) => entity.addMatch({ cardId: id, index: i }));
   return context.finish(true);
