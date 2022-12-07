@@ -66,11 +66,11 @@ export class SentenceRepository extends Repository<Sentence, string> {
 
   public async get(sentence: string) {
     if (sentence in this.cache) return this.cache[sentence];
-    const { bucket } = Sentence.createKey(sentence);
-    const data = await this.context.client.get(commandOptions({ returnBuffers: true }), bucket);
-    if (!data) return new Sentence(this.context, sentence, []); // TMP
 
-    const entity = this.fromRedis({ data }, sentence);
+    const { bucket } = Sentence.createKey(sentence);
+    const data = await this.context.client.get(commandOptions({ returnBuffers: true }), this.prefix + bucket);
+
+    const entity = data ? this.fromRedis({ data }, sentence) : new Sentence(this.context, sentence, []);
     this.cache[sentence] = entity;
     return entity;
   }
@@ -78,6 +78,6 @@ export class SentenceRepository extends Repository<Sentence, string> {
   public save(e: Sentence): unknown {
     e.updated = false;
     const data = e.matches.map(({ cardId, index }) => e.subKey + paddedHex(cardId, 8) + paddedHex(index, 4));
-    return this.context.transaction.append(e.key, Buffer.from(data.join(''), 'hex'));
+    return this.context.transaction.append(this.prefix + e.key, Buffer.from(data.join(''), 'hex'));
   }
 }

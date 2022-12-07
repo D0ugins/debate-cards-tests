@@ -1,7 +1,4 @@
 import { createClient } from 'redis';
-import { SubBucketEntity, SubBucketRepository } from './SubBucket';
-import { SentenceRepository } from './Sentence';
-import { CardInfoRepository } from './CardInfo';
 import { PrismaClient } from '@prisma/client';
 import { groupBy, map, max, maxBy, min, uniq } from 'lodash';
 
@@ -128,28 +125,9 @@ async function getMatching(context: RedisContext, cardId: number) {
   return map(matchInfo.filter(isMatch), 'cardId');
 }
 
-async function processCard(context: RedisContext, id: number, sentences: string[]) {
-  const matchedCards = await getMatching(context, id);
-
-  const bucketCandidates = uniq(
-    await Promise.all(matchedCards.map(async (id) => (await context.cardInfoRepository.get(id)).subBucket)),
-  );
-  bucketCandidates.forEach((b) => b.setMatches(id, matchedCards));
-  const matchedBuckets = bucketCandidates.filter((b) => b.doesBucketMatch(matchedCards));
-
-  let addBucket: SubBucketEntity;
-  if (!matchedBuckets) {
-    addBucket = context.subBucketRepository.create(id, matchedCards);
-  } else {
-    addBucket = maxBy(matchedBuckets, (b) => b.size) ?? matchedBuckets[0];
-    addBucket.addCard(id, matchedCards);
-  }
-
-  context.cardInfoRepository.create(id, sentences.length, addBucket);
-  const sentenceEntities = await Promise.all(sentences.map((s) => context.sentenceRepository.get(s)));
-  sentenceEntities.forEach((entity, i) => entity.addMatch({ cardId: id, index: i }));
-}
-
+import { SubBucketEntity, SubBucketRepository } from './SubBucket';
+import { CardInfoRepository } from './CardInfo';
+import { SentenceRepository } from './Sentence';
 export class RedisContext {
   sentenceRepository: SentenceRepository;
   cardInfoRepository: CardInfoRepository;
@@ -173,13 +151,40 @@ export class RedisContext {
   }
 }
 
+async function processCard(context: RedisContext, id: number, sentences: string[]) {
+  const matchedCards = await getMatching(context, id);
+  const bucketCandidates = uniq(
+    await Promise.all(matchedCards.map(async (id) => (await context.cardInfoRepository.get(id)).subBucket)),
+  );
+  bucketCandidates.forEach((b) => b.setMatches(id, matchedCards));
+  const matchedBuckets = bucketCandidates.filter((b) => b.doesBucketMatch(matchedCards));
+
+  let addBucket: SubBucketEntity;
+  if (!matchedBuckets.length) {
+    addBucket = context.subBucketRepository.create(id, matchedCards);
+  } else {
+    addBucket = maxBy(matchedBuckets, (b) => b.size) ?? matchedBuckets[0];
+    addBucket.addCard(id, matchedCards);
+  }
+
+  context.cardInfoRepository.create(id, sentences.length, addBucket);
+  const sentenceEntities = await Promise.all(sentences.map((s) => context.sentenceRepository.get(s)));
+  sentenceEntities.forEach((entity, i) => entity.addMatch({ cardId: id, index: i }));
+  return context.finish(true);
+}
+
 (async () => {
   console.log('Started');
   await redis.connect();
-  console.time();
-  const context = new RedisContext(redis);
-
-  console.timeEnd();
+  await redis.flushDb();
+  console.time('dedup');
+  const ids = map(await db.evidence.findMany({ where: { bucketId: 876 }, select: { id: true } }), 'id');
+  for (let i = 0; i < ids.length; i++) {
+    console.timeLog('dedup', i);
+    const context = new RedisContext(redis);
+    await processCard(context, ids[i], (await loadSentences(ids[i])) ?? []);
+  }
+  console.timeEnd('dedup');
 
   redis.disconnect();
 })();
