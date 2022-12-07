@@ -1,13 +1,14 @@
 import { intersection } from 'lodash';
 import { Entity, RedisContext, Repository, SHOULD_MATCH } from '.';
 
-export class SubBucket implements Entity<number> {
-  public updated: boolean = false;
+export type SubBucketEntity = InstanceType<typeof SubBucket>;
+class SubBucket implements Entity<number> {
   constructor(
     public context: RedisContext,
     private _cards: Record<number, number>,
     private _matching: Record<number, number>,
-    public originalKey?: number,
+    public updated: boolean = false,
+    public readonly originalKey?: number,
   ) {}
 
   get members(): number[] {
@@ -24,7 +25,12 @@ export class SubBucket implements Entity<number> {
     return this._matching;
   }
 
+  doesBucketMatch(matches: number[]) {
+    return SHOULD_MATCH(intersection(matches, this.members).length, this.size);
+  }
+
   addCard(id: number, matches: number[]) {
+    this.updated = true;
     delete this._matching[id];
     if (id in this.cards) return console.log(`Warning: ${id} already in bucket ${this.key}`);
 
@@ -37,11 +43,8 @@ export class SubBucket implements Entity<number> {
     }
   }
 
-  doesBucketMatch(matches: number[]) {
-    return SHOULD_MATCH(intersection(matches, this.members).length, this.size);
-  }
-
   setMatches(id: number, matches: number[]) {
+    this.updated = true;
     this._matching[id] = intersection(this.members, matches).length;
   }
 
@@ -64,7 +67,7 @@ export class SubBucketRepository extends Repository<SubBucket, number> {
   protected prefix = 'SB:';
 
   create(root: number, matches: number[]) {
-    const entity = new SubBucket(this.context, {}, {});
+    const entity = new SubBucket(this.context, {}, {}, true);
     entity.addCard(root, matches);
     this.cache[root] = entity;
     return entity;
@@ -79,6 +82,6 @@ export class SubBucketRepository extends Repository<SubBucket, number> {
       else if (type === 'm') matches[value] = +obj[key];
       else throw new Error(`Invalid key ${key} loading SubBucket`);
     }
-    return new SubBucket(this.context, cards, matches, key);
+    return new SubBucket(this.context, cards, matches, false, key);
   }
 }

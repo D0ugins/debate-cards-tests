@@ -1,17 +1,14 @@
 import { Entity, RedisContext, Repository } from '.';
-import { SubBucket } from './SubBucket';
+import { SubBucketEntity } from './SubBucket';
 
-export class CardInfo implements Entity<number> {
-  public key: number;
-  public updated: boolean = false;
+class CardInfo implements Entity<number> {
   constructor(
     public context: RedisContext,
-    public originalKey: number,
+    public key: number,
+    public updated: boolean = false,
     private _length: number,
-    private _subBucket: SubBucket,
-  ) {
-    this.key = originalKey;
-  }
+    private _subBucket: SubBucketEntity,
+  ) {}
 
   get length() {
     return this._length;
@@ -30,20 +27,21 @@ export class CardInfo implements Entity<number> {
   }
 
   toRedis() {
-    return { l: this.length.toString(), sb: this.subBucket.key.toString() };
+    return { l: this.length?.toString(), sb: this.subBucket?.key.toString() };
   }
 }
 
 export class CardInfoRepository extends Repository<CardInfo, number> {
   protected prefix = 'C:';
 
-  create(key: number, length: number, subBucket: SubBucket) {
-    const entity = new CardInfo(this.context, key, length, subBucket);
-    this.cache[key] = entity;
+  create(key: number, length: number, subBucket: SubBucketEntity) {
+    const entity = new CardInfo(this.context, key, true, length, subBucket);
+
+    if (length && subBucket) this.cache[key] = entity;
     return entity;
   }
 
   async fromRedis(obj: { l: string; sb: string }, key: number) {
-    return new CardInfo(this.context, key, +obj.l, await this.context.subBucketRepository.get(+obj.sb));
+    return new CardInfo(this.context, key, false, +obj.l, await this.context.subBucketRepository.get(+obj.sb));
   }
 }

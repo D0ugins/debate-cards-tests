@@ -1,5 +1,5 @@
-import { createClient, commandOptions } from 'redis';
-import { SubBucket, SubBucketRepository } from './SubBucket';
+import { createClient } from 'redis';
+import { SubBucketEntity, SubBucketRepository } from './SubBucket';
 import { SentenceRepository } from './Sentence';
 import { CardInfoRepository } from './CardInfo';
 import { PrismaClient } from '@prisma/client';
@@ -35,7 +35,7 @@ export interface Entity<K extends string | number> {
   updated: boolean;
   originalKey?: K;
   key: K;
-  toRedis(): Record<string, string>;
+  toRedis(): Partial<Record<string, string>>;
 }
 
 export abstract class Repository<E extends Entity<K>, K extends string | number> {
@@ -65,14 +65,20 @@ export abstract class Repository<E extends Entity<K>, K extends string | number>
     return entity;
   }
 
-  public async save(e: E): Promise<unknown> {
+  public save(e: E): unknown {
+    e.updated = false;
     const key = e.key.toString();
     if (e.originalKey) this.context.transaction.del(`${this.prefix}${e.originalKey.toString()}`);
-    return Promise.all(
-      Object.entries(e.toRedis()).map(([subKey, value]) =>
-        this.context.transaction.hSet(`${this.prefix}${key}`, subKey, value),
-      ),
+    return Object.entries(e.toRedis()).map(
+      ([subKey, value]) => value && this.context.transaction.hSet(`${this.prefix}${key}`, subKey, value),
     );
+  }
+
+  public saveAll() {
+    for (const key in this.cache) {
+      const entity = this.cache[key];
+      if (entity.updated) this.save(entity);
+    }
   }
 }
 
@@ -131,17 +137,17 @@ async function processCard(context: RedisContext, id: number, sentences: string[
   bucketCandidates.forEach((b) => b.setMatches(id, matchedCards));
   const matchedBuckets = bucketCandidates.filter((b) => b.doesBucketMatch(matchedCards));
 
-  let addBucket: SubBucket;
+  let addBucket: SubBucketEntity;
   if (!matchedBuckets) {
     addBucket = context.subBucketRepository.create(id, matchedCards);
   } else {
     addBucket = maxBy(matchedBuckets, (b) => b.size) ?? matchedBuckets[0];
     addBucket.addCard(id, matchedCards);
   }
+
   context.cardInfoRepository.create(id, sentences.length, addBucket);
-  await Promise.all(
-    sentences.map(async (s, i) => (await context.sentenceRepository.get(s)).addMatch({ cardId: id, index: i })),
-  );
+  const sentenceEntities = await Promise.all(sentences.map((s) => context.sentenceRepository.get(s)));
+  sentenceEntities.forEach((entity, i) => entity.addMatch({ cardId: id, index: i }));
 }
 
 export class RedisContext {
@@ -157,7 +163,12 @@ export class RedisContext {
     this.subBucketRepository = new SubBucketRepository(this);
   }
 
-  finish() {
+  finish(save: boolean = true) {
+    if (save) {
+      this.subBucketRepository.saveAll();
+      this.cardInfoRepository.saveAll();
+      this.sentenceRepository.saveAll();
+    }
     return this.transaction.exec();
   }
 }

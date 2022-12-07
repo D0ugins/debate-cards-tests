@@ -3,14 +3,25 @@ import { commandOptions } from 'redis';
 import { Entity, RedisContext, Repository, SentenceMatch } from '.';
 
 const paddedHex = (num: number, len: number) => num.toString(16).padStart(len, '0');
-export class Sentence implements Entity<string> {
+class Sentence implements Entity<string> {
   public key: string;
   public subKey: string;
-  public updated: boolean = false;
-  constructor(public context: RedisContext, public sentence: string, private _matches: SentenceMatch[]) {
+  constructor(
+    public context: RedisContext,
+    public sentence: string,
+    private _matches: SentenceMatch[],
+    public updated: boolean = false,
+  ) {
     const { bucket, subKey } = Sentence.createKey(sentence);
     this.key = bucket;
     this.subKey = subKey;
+  }
+
+  static createKey(sentence: string) {
+    const hash = createHash('md5').update(sentence).digest('hex');
+    // Uses top 20 bits as bucket, and next 40 as key
+    // Will create 65k buckets, each containing a thousand or so sentences with the full dataset.
+    return { bucket: hash.slice(0, 5), subKey: hash.slice(5, 15) };
   }
 
   get matches(): readonly SentenceMatch[] {
@@ -20,13 +31,6 @@ export class Sentence implements Entity<string> {
   addMatch(match: SentenceMatch) {
     this.updated = true;
     this._matches.push(match);
-  }
-
-  static createKey(sentence: string) {
-    const hash = createHash('md5').update(sentence).digest('hex');
-    // Uses top 20 bits as bucket, and next 40 as key
-    // Will create 65k buckets, each containing a thousand or so sentences with the full dataset.
-    return { bucket: hash.slice(0, 5), subKey: hash.slice(5, 15) };
   }
 
   toRedis() {
@@ -42,7 +46,7 @@ export class SentenceRepository extends Repository<Sentence, string> {
   protected prefix = 'S:';
 
   create(sentence: string, matches: SentenceMatch[]): Sentence {
-    const entity = new Sentence(this.context, sentence, matches);
+    const entity = new Sentence(this.context, sentence, matches, true);
     this.cache[sentence] = entity;
     return entity;
   }
@@ -60,7 +64,7 @@ export class SentenceRepository extends Repository<Sentence, string> {
     return new Sentence(this.context, sentence, matches);
   }
 
-  public async get(sentence: string): Promise<Sentence> {
+  public async get(sentence: string) {
     if (sentence in this.cache) return this.cache[sentence];
     const { bucket } = Sentence.createKey(sentence);
     const data = await this.context.client.get(commandOptions({ returnBuffers: true }), bucket);
@@ -71,7 +75,8 @@ export class SentenceRepository extends Repository<Sentence, string> {
     return entity;
   }
 
-  public async save(e: Sentence): Promise<unknown> {
+  public save(e: Sentence): unknown {
+    e.updated = false;
     const data = e.matches.map(({ cardId, index }) => e.subKey + paddedHex(cardId, 8) + paddedHex(index, 4));
     return this.context.transaction.append(e.key, Buffer.from(data.join(''), 'hex'));
   }
