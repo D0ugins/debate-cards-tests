@@ -1,0 +1,16 @@
+{
+  "name": "debate-cards-tests",
+  "version": "1.0.0",
+  "main": "index.js",
+  "repository": "https://github.com/D0ugins/debate-cards-tests",
+  "author": "D0ugins <60764137+D0ugins@users.noreply.github.com>",
+  "license": "MIT",
+  "dependencies": {
+    "@prisma/client": "^4.7.1",
+    "lodash": "^4.17.21",
+    "redis": "^4.5.1"
+  },
+  "devDependencies": {
+    "@types/node": "^18.11.11"
+  }
+}
