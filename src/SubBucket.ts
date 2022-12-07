@@ -35,7 +35,7 @@ class SubBucket implements Entity<number> {
     if (id in this.cards) return console.log(`Warning: ${id} already in bucket ${this.key}`);
 
     this._cards[id] = 1;
-    for (const match in matches) {
+    for (const match of matches) {
       if (match in this.cards) {
         this._cards[id]++;
         this._cards[match]++;
