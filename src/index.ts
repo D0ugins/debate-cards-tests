@@ -1,6 +1,6 @@
 import { createClient } from 'redis';
 import { PrismaClient } from '@prisma/client';
-import _, { groupBy, map, max, maxBy, min, uniq } from 'lodash';
+import _, { map, maxBy, uniq } from 'lodash';
 
 export const db = new PrismaClient();
 export const redis = createClient({
@@ -36,7 +36,7 @@ export interface Entity<K extends string | number> {
 }
 
 export abstract class Repository<E extends Entity<K>, K extends string | number> {
-  protected cache: Record<K, E>;
+  public cache: Record<K, E | Promise<E>>;
   protected abstract prefix: string;
 
   constructor(protected context: RedisContext) {
@@ -54,12 +54,19 @@ export abstract class Repository<E extends Entity<K>, K extends string | number>
   abstract create(...args: any[]): E;
   abstract fromRedis(obj: Record<string, string | Buffer>, key: K): E | Promise<E>;
 
-  public async get(key: K): Promise<E> {
-    if (key in this.cache) return this.cache[key];
-    const obj = await this.getKey(key);
-    const entity = await this.fromRedis(obj, key);
-    this.cache[key] = entity;
-    return entity;
+  public async get(key: K) {
+    if (!(key in this.cache)) {
+      // Add to cache right away so concurrent requests get the same object
+      this.cache[key] = new Promise((resolve) => {
+        this.getKey(key)
+          .then((obj) => this.fromRedis(obj, key))
+          .then((entity) => {
+            resolve(entity);
+            this.cache[key] = entity;
+          });
+      });
+    }
+    return this.cache[key];
   }
 
   public save(e: E): unknown {
@@ -70,9 +77,9 @@ export abstract class Repository<E extends Entity<K>, K extends string | number>
     );
   }
 
-  public saveAll() {
+  public async saveAll() {
     for (const key in this.cache) {
-      const entity = this.cache[key];
+      const entity = (await this.cache[key]) as E;
       if (entity.updated) this.save(entity);
     }
   }
@@ -99,7 +106,7 @@ const checkMatch = (
 // // Check in both orders
 const isMatch = (info: MatchPair) => checkMatch(info.a, info.b) || checkMatch(info.b, info.a);
 
-async function getMatching(context: RedisContext, cardId: number) {
+async function getMatching(context: RedisContext, cardId: number): Promise<number[]> {
   const sentences = (await loadSentences(cardId)) ?? [];
   /* 
     Watch for change in sentences, prevents new card being added that this card should match and it being missed
@@ -136,9 +143,9 @@ async function getMatching(context: RedisContext, cardId: number) {
     }
   }
 
-  const matches = [];
+  const matches: number[] = [];
   for (const id in matchInfo) {
-    if (isMatch(matchInfo[id])) matches.push(id);
+    if (isMatch(matchInfo[id])) matches.push(+id);
   }
   return matches;
 }
@@ -162,12 +169,12 @@ export class RedisContext {
     this.subBucketRepository = new SubBucketRepository(this);
   }
 
-  finish(save: boolean = true) {
+  async finish(save: boolean = true) {
     if (save) {
-      this.subBucketRepository.saveAll();
-      this.cardLengthRepository.saveAll();
-      this.cardSubBucketRepository.saveAll();
-      this.sentenceRepository.saveAll();
+      await this.subBucketRepository.saveAll();
+      await this.cardLengthRepository.saveAll();
+      await this.cardSubBucketRepository.saveAll();
+      await this.sentenceRepository.saveAll();
     }
     return this.transaction.exec();
   }
@@ -200,9 +207,12 @@ async function processCard(context: RedisContext, id: number, sentences: string[
   await redis.connect();
   await redis.flushDb();
   console.time('dedup');
-  const ids = map(await db.evidence.findMany({ where: { bucketId: 876 }, select: { id: true } }), 'id');
+  const ids = map(
+    await db.evidence.findMany({ where: { bucketId: 876 }, select: { id: true }, orderBy: { id: 'asc' } }),
+    'id',
+  );
   for (let i = 0; i < ids.length; i++) {
-    console.timeLog('dedup', i);
+    if (i % 10 == 0) console.timeLog('dedup', i);
     const context = new RedisContext(redis);
     await processCard(context, ids[i], (await loadSentences(ids[i])) ?? []);
   }
