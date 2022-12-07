@@ -30,6 +30,10 @@ class Sentence implements Entity<string> {
     return this._matches.concat(this._additions);
   }
 
+  get updates(): readonly SentenceMatch[] {
+    return this._additions;
+  }
+
   addMatch(match: SentenceMatch) {
     this.updated = true;
     this._additions.push(match);
@@ -79,7 +83,7 @@ export class SentenceRepository extends Repository<Sentence, string> {
 
   public save(e: Sentence): unknown {
     e.updated = false;
-    const data = e.matches.map(({ cardId, index }) => e.subKey + paddedHex(cardId, 8) + paddedHex(index, 4));
+    const data = e.updates.map(({ cardId, index }) => e.subKey + paddedHex(cardId, 8) + paddedHex(index, 4));
     return this.context.transaction.append(this.prefix + e.key, Buffer.from(data.join(''), 'hex'));
   }
 }
