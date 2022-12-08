@@ -1,6 +1,6 @@
 import { createClient } from 'redis';
 import { PrismaClient } from '@prisma/client';
-import _, { map, maxBy, uniq } from 'lodash';
+import _, { isEmpty, map, maxBy, uniq } from 'lodash';
 import { Queue } from 'typescript-collections';
 
 export const dedupQueue = new Queue<number>();
@@ -50,25 +50,26 @@ export abstract class Repository<E extends Entity<K>, K extends string | number>
     return Promise.all(keys.map((key) => this.context.client.hGetAll(`${this.prefix}${key}`)));
   }
   protected async getKey(key: K) {
-    return (await this.getKeys([key]))[0];
+    const obj = (await this.getKeys([key]))[0];
+    return isEmpty(obj) ? null : obj;
   }
 
   abstract create(...args: any[]): E;
   abstract fromRedis(obj: Record<string, string | Buffer>, key: K): E | Promise<E>;
 
-  public async get(key: K) {
+  public async get(key: K): Promise<E> | null {
     if (!(key in this.cache)) {
       // Add to cache right away so concurrent requests get the same object
-      this.cache[key] = new Promise((resolve) => {
-        this.getKey(key)
-          .then((obj) => this.fromRedis(obj, key))
-          .then((entity) => {
-            resolve(entity);
-            this.cache[key] = entity;
-          });
-      });
+      this.cache[key] = (async () => {
+        const obj = await this.getKey(key);
+        if (isEmpty(obj)) return null;
+        const entity = this.fromRedis(obj, key);
+        if (!entity) return null;
+        this.cache[key] = entity;
+        return entity;
+      })();
     }
-    return this.cache[key];
+    return this.cache[key] as Promise<E>;
   }
 
   public save(e: E): unknown {
@@ -82,6 +83,7 @@ export abstract class Repository<E extends Entity<K>, K extends string | number>
   public async saveAll() {
     for (const key in this.cache) {
       const entity = (await this.cache[key]) as E;
+      if (!entity) continue;
       if (entity.updated) this.save(entity);
     }
   }
@@ -107,7 +109,7 @@ const checkMatch = (
 // // Check in both orders
 const isMatch = (info: MatchPair) => checkMatch(info.a, info.b) || checkMatch(info.b, info.a);
 
-async function getMatching(context: RedisContext, cardId: number): Promise<number[]> {
+export async function getMatching(context: RedisContext, cardId: number): Promise<number[]> {
   const sentences = (await loadSentences(cardId)) ?? [];
   /* 
     Watch for change in sentences, prevents new card being added that this card should match and it being missed
@@ -184,8 +186,8 @@ export class RedisContext {
 async function processCard(context: RedisContext, id: number, sentences: string[]) {
   const matchedCards = await getMatching(context, id);
   const bucketCandidates = uniq(
-    await Promise.all(matchedCards.map(async (id) => (await context.cardSubBucketRepository.get(id)).subBucket)),
-  );
+    await Promise.all(matchedCards.map(async (id) => (await context.cardSubBucketRepository.get(id))?.subBucket)),
+  ).filter((el) => el); //
   bucketCandidates.forEach((b) => b.setMatches(id, matchedCards));
   const matchedBuckets = bucketCandidates.filter((b) => b.doesBucketMatch(matchedCards));
 
@@ -197,7 +199,9 @@ async function processCard(context: RedisContext, id: number, sentences: string[
     addBucket.addCard(id, matchedCards);
   }
 
-  context.cardSubBucketRepository.create(id, sentences.length, addBucket);
+  await addBucket.resolve();
+  context.cardLengthRepository.create(id, sentences.length);
+  context.cardSubBucketRepository.create(id, addBucket);
   const sentenceEntities = await Promise.all(sentences.map((s) => context.sentenceRepository.get(s)));
   sentenceEntities.forEach((entity, i) => entity.addMatch({ cardId: id, index: i }));
   return context.finish(true);

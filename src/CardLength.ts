@@ -25,10 +25,10 @@ class CardLength implements Entity<number> {
 export class CardLengthRepository extends Repository<CardLength, number> {
   protected prefix = 'C:';
 
-  create(key: number, length: number, subBucket: SubBucketEntity) {
+  create(key: number, length: number) {
     const entity = new CardLength(this.context, key, true, length);
 
-    if (length && subBucket) this.cache[key] = entity;
+    this.cache[key] = entity;
     return entity;
   }
 

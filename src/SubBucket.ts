@@ -1,5 +1,5 @@
 import { intersection } from 'lodash';
-import { Entity, RedisContext, Repository, SHOULD_MATCH } from '.';
+import { dedupQueue, Entity, getMatching, RedisContext, Repository, SHOULD_MATCH } from '.';
 
 export type SubBucketEntity = InstanceType<typeof SubBucket>;
 class SubBucket implements Entity<number> {
@@ -46,6 +46,27 @@ class SubBucket implements Entity<number> {
   setMatches(id: number, matches: number[]) {
     this.updated = true;
     this._matching[id] = intersection(this.members, matches).length;
+  }
+
+  async removeCard(id: number) {
+    this.updated = true;
+    delete this._cards[id];
+    this.context.cardSubBucketRepository.delete(id);
+    for (const match in await getMatching(this.context, id)) {
+      const counter = match in this.cards ? this._cards : this._matching;
+      if (counter[match] <= 1) delete counter[match];
+      else counter[match]--;
+    }
+    dedupQueue.add(id);
+  }
+
+  async resolve() {
+    for (const cardId in this.cards) {
+      if (!SHOULD_MATCH(this.cards[cardId], this.size)) {
+        await this.removeCard(+cardId);
+        return this.resolve();
+      }
+    }
   }
 
   get key() {
