@@ -29,15 +29,15 @@ export const getSentences = (text: string, cutoff = 20): string[] | undefined =>
 export type SentenceMatch = { cardId: number; index: number };
 export type RedisTransaction = ReturnType<typeof redis['multi']>;
 
-export interface Entity<K extends string | number> {
+export interface Entity<K extends string | number, V = Record<string, string>> {
   context: RedisContext;
   updated: boolean;
   originalKey?: K;
   key: K;
-  toRedis(): Partial<Record<string, string>>;
+  toRedis(): V;
 }
 
-export abstract class Repository<E extends Entity<K>, K extends string | number> {
+export abstract class Repository<E extends Entity<string | number, unknown>, K extends string | number> {
   public cache: Record<K, E | Promise<E>>;
   protected abstract prefix: string;
 
@@ -57,18 +57,18 @@ export abstract class Repository<E extends Entity<K>, K extends string | number>
   abstract create(...args: any[]): E;
   abstract fromRedis(obj: Record<string, string | Buffer>, key: K): E | Promise<E>;
 
+  protected async loadRedis(key: K) {
+    const obj = await this.getKey(key);
+    if (isEmpty(obj)) return null;
+    const entity = this.fromRedis(obj, key);
+    if (!entity) return null;
+    this.cache[key] = entity;
+    return entity;
+  }
+
   public async get(key: K): Promise<E> | null {
-    if (!(key in this.cache)) {
-      // Add to cache right away so concurrent requests get the same object
-      this.cache[key] = (async () => {
-        const obj = await this.getKey(key);
-        if (isEmpty(obj)) return null;
-        const entity = this.fromRedis(obj, key);
-        if (!entity) return null;
-        this.cache[key] = entity;
-        return entity;
-      })();
-    }
+    // Add to cache right away so concurrent requests get the same object
+    if (!(key in this.cache)) this.cache[key] = this.loadRedis(key);
     return this.cache[key] as Promise<E>;
   }
 

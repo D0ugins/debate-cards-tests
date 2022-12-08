@@ -3,7 +3,7 @@ import { commandOptions } from 'redis';
 import { Entity, RedisContext, Repository, SentenceMatch } from '.';
 
 const paddedHex = (num: number, len: number) => num.toString(16).padStart(len, '0');
-class Sentence implements Entity<string> {
+class Sentence implements Entity<string, string> {
   public key: string;
   public subKey: string;
   private _additions: SentenceMatch[];
@@ -40,11 +40,9 @@ class Sentence implements Entity<string> {
   }
 
   toRedis() {
-    return {
-      matches: this._additions
-        .map(({ cardId, index }) => this.subKey + paddedHex(cardId, 8) + paddedHex(index, 4))
-        .join(''),
-    };
+    return this._additions
+      .map(({ cardId, index }) => this.subKey + paddedHex(cardId, 8) + paddedHex(index, 4))
+      .join('');
   }
 }
 
@@ -70,7 +68,7 @@ export class SentenceRepository extends Repository<Sentence, string> {
     return new Sentence(this.context, sentence, matches);
   }
 
-  public async get(sentence: string) {
+  public async loadRedis(sentence: string) {
     if (sentence in this.cache) return this.cache[sentence];
 
     const { bucket } = Sentence.createKey(sentence);
@@ -84,7 +82,6 @@ export class SentenceRepository extends Repository<Sentence, string> {
 
   public save(e: Sentence): unknown {
     e.updated = false;
-    const data = e.additions.map(({ cardId, index }) => e.subKey + paddedHex(cardId, 8) + paddedHex(index, 4));
-    return this.context.transaction.append(this.prefix + e.key, Buffer.from(data.join(''), 'hex'));
+    return this.context.transaction.append(this.prefix + e.key, Buffer.from(e.toRedis(), 'hex'));
   }
 }
