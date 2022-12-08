@@ -1,5 +1,4 @@
 import { Entity, RedisContext, Repository } from '.';
-import { SubBucketEntity } from './SubBucket';
 
 class CardLength implements Entity<number> {
   constructor(
