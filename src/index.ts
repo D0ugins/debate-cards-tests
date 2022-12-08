@@ -1,7 +1,9 @@
 import { createClient } from 'redis';
 import { PrismaClient } from '@prisma/client';
 import _, { map, maxBy, uniq } from 'lodash';
+import { Queue } from 'typescript-collections';
 
+export const dedupQueue = new Queue<number>();
 export const db = new PrismaClient();
 export const redis = createClient({
   // url: 'redis://redis:6379',
@@ -85,9 +87,8 @@ export abstract class Repository<E extends Entity<K>, K extends string | number>
   }
 }
 
-// Kind of inefficient way to manage context, but performance effect is only a few microseconds
-
 const loadSentences = async (id: number) => {
+  if (!id) return [];
   const card = await db.evidence.findUnique({ where: { id }, select: { id: true, fulltext: true } });
   if (!card?.fulltext) throw new Error(`Card with id ${id} does not exist`);
 
@@ -202,21 +203,25 @@ async function processCard(context: RedisContext, id: number, sentences: string[
   return context.finish(true);
 }
 
+const drain = async () => {
+  if (dedupQueue.size() % 10 == 0) console.timeLog('dedup', dedupQueue.size());
+
+  const id = dedupQueue.dequeue();
+  if (!id) {
+    console.timeEnd('dedup');
+    return redis.disconnect();
+  }
+  const context = new RedisContext(redis);
+  await processCard(context, id, (await loadSentences(id)) ?? []);
+  setImmediate(drain);
+};
+
 (async () => {
   console.log('Started');
   await redis.connect();
   await redis.flushDb();
+  const ids = await db.evidence.findMany({ where: { bucketId: 876 }, select: { id: true }, orderBy: { id: 'asc' } });
+  for (const { id } of ids) dedupQueue.add(id);
   console.time('dedup');
-  const ids = map(
-    await db.evidence.findMany({ where: { bucketId: 876 }, select: { id: true }, orderBy: { id: 'asc' } }),
-    'id',
-  );
-  for (let i = 0; i < ids.length; i++) {
-    if (i % 10 == 0) console.timeLog('dedup', i);
-    const context = new RedisContext(redis);
-    await processCard(context, ids[i], (await loadSentences(ids[i])) ?? []);
-  }
-  console.timeEnd('dedup');
-
-  redis.disconnect();
+  drain();
 })();
