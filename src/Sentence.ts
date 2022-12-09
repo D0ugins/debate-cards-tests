@@ -68,9 +68,7 @@ export class SentenceRepository extends Repository<Sentence, string> {
     return new Sentence(this.context, sentence, matches);
   }
 
-  public async loadRedis(sentence: string) {
-    if (sentence in this.cache) return this.cache[sentence];
-
+  protected async loadRedis(sentence: string) {
     const { bucket } = Sentence.createKey(sentence);
     this.context.client.watch(this.prefix + bucket);
     const data = await this.context.client.get(commandOptions({ returnBuffers: true }), this.prefix + bucket);
