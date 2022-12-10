@@ -5,23 +5,23 @@ export type SubBucketEntity = InstanceType<typeof SubBucket>;
 class SubBucket implements Entity<number> {
   constructor(
     public context: RedisContext,
-    private _cards: Record<number, number>,
-    private _matching: Record<number, number>,
+    private _cards: Map<number, number>,
+    private _matching: Map<number, number>,
     public updated: boolean = false,
     public readonly originalKey?: number,
   ) {}
 
   get members(): number[] {
-    return Object.keys(this.cards).map(Number);
+    return [...this.cards.keys()];
   }
   get size(): number {
-    return Object.keys(this.cards).length;
+    return this.cards.size;
   }
 
-  get cards(): Readonly<Record<number, number>> {
+  get cards(): ReadonlyMap<number, number> {
     return this._cards;
   }
-  get matching(): Readonly<Record<number, number>> {
+  get matching(): ReadonlyMap<number, number> {
     return this._matching;
   }
 
@@ -31,55 +31,51 @@ class SubBucket implements Entity<number> {
 
   addCard(id: number, matches: number[]) {
     this.updated = true;
-    delete this._matching[id];
-    if (id in this.cards) return console.log(`Warning: ${id} already in bucket ${this.key}`);
+    this._matching.delete(id);
+    if (this.cards.has(id)) return console.log(`Warning: ${id} already in bucket ${this.key}`);
 
-    this._cards[id] = 1;
+    this._cards.set(id, 1);
     for (const match of matches) {
-      if (match in this.cards) {
-        this._cards[id]++;
-        this._cards[match]++;
-      } else this._matching[match] = (this.matching[match] ?? 0) + 1;
+      if (this.cards.has(match)) {
+        this._cards.set(id, this.cards.get(id) + 1);
+        this._cards.set(match, this.cards.get(match) + 1);
+      } else this._matching.set(match, (this.matching.get(match) ?? 0) + 1);
     }
   }
 
   setMatches(id: number, matches: number[]) {
     this.updated = true;
-    this._matching[id] = intersection(this.members, matches).length;
+    this._matching.set(id, intersection(this.members, matches).length);
   }
 
   async removeCard(id: number) {
     this.updated = true;
-    delete this._cards[id];
+    this._cards.delete(id);
     this.context.cardSubBucketRepository.delete(id);
-    for (const match in await getMatching(this.context, id)) {
-      const counter = match in this.cards ? this._cards : this._matching;
-      if (counter[match] <= 1) delete counter[match];
-      else counter[match]--;
+    for (const match of await getMatching(this.context, id)) {
+      const counter = this.cards.has(match) ? this._cards : this._matching;
+      if (counter.get(match) <= 1) counter.delete(match);
+      else counter.set(match, counter.get(match) - 1);
     }
     dedupQueue.add(id);
   }
 
   async resolve() {
-    for (const cardId in this.cards) {
-      if (!SHOULD_MATCH(this.cards[cardId], this.size)) {
-        await this.removeCard(+cardId);
+    for (const [cardId, count] of this.cards) {
+      if (!SHOULD_MATCH(count, this.size)) {
+        await this.removeCard(cardId);
         return this.resolve();
       }
     }
   }
 
   get key() {
-    return Math.min(...Object.keys(this.cards).map(Number));
+    return Math.min(...this.cards.keys());
   }
   toRedis() {
     const obj: Record<string, string> = {};
-    for (const cardId in this.cards) {
-      obj[`c${cardId}`] = this.cards[cardId].toString();
-    }
-    for (const matchId in this.matching) {
-      obj[`m${matchId}`] = this.matching[matchId].toString();
-    }
+    for (const [cardId, count] of this.cards) obj[`c${cardId}`] = count.toString();
+    for (const [matchId, count] of this.matching) obj[`m${matchId}`] = count.toString();
     return obj;
   }
 }
@@ -88,7 +84,7 @@ export class SubBucketRepository extends Repository<SubBucket, number> {
   protected prefix = 'SB:';
 
   create(root: number, matches: number[]) {
-    const entity = new SubBucket(this.context, {}, {}, true);
+    const entity = new SubBucket(this.context, new Map(), new Map(), true);
     entity.addCard(root, matches);
     this.cache[root] = entity;
     return entity;
@@ -100,12 +96,12 @@ export class SubBucketRepository extends Repository<SubBucket, number> {
   }
 
   fromRedis(obj: Record<string, string>, key: number) {
-    const cards: Record<string, number> = {};
-    const matches: Record<string, number> = {};
+    const cards: Map<number, number> = new Map();
+    const matches: Map<number, number> = new Map();
     for (const key in obj) {
-      const [type, value] = [key.charAt(0), +key.slice(1)];
-      if (type === 'c') cards[value] = +obj[key];
-      else if (type === 'm') matches[value] = +obj[key];
+      const [type, id] = [key.charAt(0), +key.slice(1)];
+      if (type === 'c') cards.set(id, +obj[key]);
+      else if (type === 'm') matches.set(id, +obj[key]);
       else throw new Error(`Invalid key ${key} loading SubBucket`);
     }
     return new SubBucket(this.context, cards, matches, false, key);
