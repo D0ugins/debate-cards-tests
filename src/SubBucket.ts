@@ -1,15 +1,40 @@
-import { intersection } from 'lodash';
-import { dedupQueue, Entity, getMatching, RedisContext, Repository, SHOULD_MATCH } from '.';
+import { intersection, uniq } from 'lodash';
+import { dedupQueue, DynamicKeyEntity, getMatching, RedisContext, Repository, SHOULD_MATCH, SHOULD_MERGE } from '.';
+import { cardSet, shouldMerge } from './BucketSet';
 
-export type SubBucketEntity = InstanceType<typeof SubBucket>;
-class SubBucket implements Entity<number> {
+export interface CardSet {
+  size: number;
+  members: readonly number[];
+  matching: ReadonlyMap<number, number>;
+}
+
+export type SubBucketEntity = SubBucket;
+class SubBucket implements DynamicKeyEntity<number>, CardSet {
+  public key: number;
   constructor(
     public context: RedisContext,
     private _cards: Map<number, number>,
     private _matching: Map<number, number>,
+    private _bucketSetId: number,
     public updated: boolean = false,
-    public readonly originalKey?: number,
-  ) {}
+  ) {
+    this.key = this.createKey();
+  }
+
+  public createKey(): number {
+    return Math.min(...this.cards.keys());
+  }
+
+  public async propogateKey() {
+    const newKey = this.createKey();
+    if (newKey === this.key) return;
+
+    const cards = await this.getCards();
+    cards.forEach((card) => (card.updated = true)); // Has reference to this, so key gets updated on save
+    (await this.getBucketSet()).renameBucket(this.key, newKey);
+    this.context.subBucketRepository.renameCacheKey(this.key, newKey);
+    this.key = newKey;
+  }
 
   get members(): number[] {
     return [...this.cards.keys()];
@@ -23,6 +48,23 @@ class SubBucket implements Entity<number> {
   }
   get matching(): ReadonlyMap<number, number> {
     return this._matching;
+  }
+
+  get bucketSetId() {
+    return this._bucketSetId;
+  }
+
+  set bucketSetId(value: number) {
+    this.updated = true;
+    this._bucketSetId = value;
+  }
+
+  async getCards() {
+    return Promise.all(this.members.map(async (cardId) => await this.context.cardSubBucketRepository.get(cardId)));
+  }
+
+  async getBucketSet() {
+    return this.context.bucketSetRepository.get(this._bucketSetId);
   }
 
   doesBucketMatch(matches: number[]) {
@@ -60,20 +102,47 @@ class SubBucket implements Entity<number> {
     dedupQueue.add(id);
   }
 
-  async resolve() {
+  async resolve(updates: readonly number[], removed: boolean = false) {
+    if (this.size === 0) return;
     for (const [cardId, count] of this.cards) {
       if (!SHOULD_MATCH(count, this.size)) {
         await this.removeCard(cardId);
-        return this.resolve();
+        return this.resolve(updates, true);
       }
     }
+    if (removed) await (await this.getBucketSet()).resolve();
+
+    updates = updates.filter((id) => !this.cards.has(id));
+    // Filter out things that we can garuntee were already counted as matching
+    const dontMatch = updates.filter((subBucketId) => !SHOULD_MERGE(this.matching.get(subBucketId) - 1, Infinity));
+    if (dontMatch.length === 0) return;
+
+    const thisBucketSet = await this.getBucketSet();
+    const { matching: setMatching, size: setSize } = cardSet(await thisBucketSet.getSubBuckets());
+    // If there are updated cards that might not have already matched, check if they didnt match before and do now
+    const newMatches = dontMatch.filter(
+      (id) => SHOULD_MERGE(setMatching.get(id), setSize) && !SHOULD_MERGE(setMatching.get(id) - 1, setSize),
+    );
+
+    const newMatchSubBuckets = (await this.context.cardSubBucketRepository.getMany(newMatches))
+      .filter((s) => s?.subBucket)
+      .map((s) => s.subBucket)
+      .filter((subBucket) => subBucket.bucketSetId != this.bucketSetId);
+    const newMatchBucketSets = new Set(
+      await Promise.all(newMatchSubBuckets.map((subBucket) => subBucket.getBucketSet())),
+    );
+
+    const setSubBuckets = await thisBucketSet.getSubBuckets();
+    for (const bucketSet of newMatchBucketSets) {
+      // if (this.key === 23274) debugger;
+      if (shouldMerge(setSubBuckets, await bucketSet.getSubBuckets())) thisBucketSet.merge(bucketSet);
+      // TODO restart with changed updates array since a new card might match entire bucketSet
+    }
+    return thisBucketSet.resolve();
   }
 
-  get key() {
-    return Math.min(...this.cards.keys());
-  }
   toRedis() {
-    const obj: Record<string, string> = {};
+    const obj: Record<string, string> = { sb: this._bucketSetId.toString() };
     for (const [cardId, count] of this.cards) obj[`c${cardId}`] = count.toString();
     for (const [matchId, count] of this.matching) obj[`m${matchId}`] = count.toString();
     return obj;
@@ -83,27 +152,33 @@ class SubBucket implements Entity<number> {
 export class SubBucketRepository extends Repository<SubBucket, number> {
   protected prefix = 'SB:';
 
-  create(root: number, matches: number[]) {
-    const entity = new SubBucket(this.context, new Map(), new Map(), true);
-    entity.addCard(root, matches);
-    this.cache[root] = entity;
-    return entity;
+  createNew(root: number, matches: number[]) {
+    const cards = new Map([[root, 1]]);
+    const matchMap = new Map(matches.map((match) => [match, 1]));
+    return new SubBucket(this.context, cards, matchMap, root, true);
   }
 
   save(e: SubBucket) {
-    if (e.originalKey) this.context.transaction.del(`${this.prefix}${e.originalKey.toString()}`);
-    super.save(e);
+    this.context.transaction.del(`${this.prefix}${e.key.toString()}`);
+    return super.save(e);
+  }
+
+  async propogateAllKeys() {
+    return Promise.all([...this.cache.values()].map(async (subBucket) => (await subBucket).propogateKey()));
   }
 
   fromRedis(obj: Record<string, string>, key: number) {
     const cards: Map<number, number> = new Map();
     const matches: Map<number, number> = new Map();
+    let bucketSetId = key;
     for (const key in obj) {
       const [type, id] = [key.charAt(0), +key.slice(1)];
-      if (type === 'c') cards.set(id, +obj[key]);
-      else if (type === 'm') matches.set(id, +obj[key]);
+      const value = +obj[key];
+      if (type === 'c') cards.set(id, value);
+      else if (type === 'm') matches.set(id, value);
+      else if (key === 'sb') bucketSetId = value;
       else throw new Error(`Invalid key ${key} loading SubBucket`);
     }
-    return new SubBucket(this.context, cards, matches, false, key);
+    return new SubBucket(this.context, cards, matches, bucketSetId, false);
   }
 }

@@ -1,7 +1,7 @@
-import { Entity, RedisContext, Repository } from '.';
+import { BaseEntity, RedisContext, Repository } from '.';
 import { SubBucketEntity } from './SubBucket';
 
-class CardSubBucket implements Entity<number> {
+class CardSubBucket implements BaseEntity<number> {
   constructor(
     public context: RedisContext,
     public key: number,
@@ -30,11 +30,8 @@ export class CardSubBucketRepository extends Repository<CardSubBucket, number> {
     delete this.cache[key];
   }
 
-  create(key: number, subBucket: SubBucketEntity) {
-    const entity = new CardSubBucket(this.context, key, true, subBucket);
-
-    this.cache[key] = entity;
-    return entity;
+  createNew(key: number, subBucket: SubBucketEntity) {
+    return new CardSubBucket(this.context, key, true, subBucket);
   }
 
   async fromRedis(obj: { sb: string }, key: number) {

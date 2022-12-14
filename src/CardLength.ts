@@ -1,6 +1,6 @@
-import { Entity, RedisContext, Repository } from '.';
+import { BaseEntity, RedisContext, Repository } from '.';
 
-class CardLength implements Entity<number> {
+class CardLength implements BaseEntity<number> {
   constructor(
     public context: RedisContext,
     public key: number,
@@ -24,11 +24,8 @@ class CardLength implements Entity<number> {
 export class CardLengthRepository extends Repository<CardLength, number> {
   protected prefix = 'C:';
 
-  create(key: number, length: number) {
-    const entity = new CardLength(this.context, key, true, length);
-
-    this.cache[key] = entity;
-    return entity;
+  createNew(key: number, length: number) {
+    return new CardLength(this.context, key, true, length);
   }
 
   async fromRedis(obj: { l: string; sb: string }, key: number) {

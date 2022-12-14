@@ -1,9 +1,9 @@
 import { createHash } from 'crypto';
 import { commandOptions } from 'redis';
-import { Entity, RedisContext, Repository, SentenceMatch } from '.';
+import { BaseEntity, RedisContext, Repository, SentenceMatch } from '.';
 
 const paddedHex = (num: number, len: number) => num.toString(16).padStart(len, '0');
-class Sentence implements Entity<string, string> {
+class Sentence implements BaseEntity<string, string> {
   public key: string;
   public subKey: string;
   private _additions: SentenceMatch[];
@@ -49,10 +49,8 @@ class Sentence implements Entity<string, string> {
 export class SentenceRepository extends Repository<Sentence, string> {
   protected prefix = 'S:';
 
-  create(sentence: string, matches: SentenceMatch[]): Sentence {
-    const entity = new Sentence(this.context, sentence, matches, true);
-    this.cache[sentence] = entity;
-    return entity;
+  createNew(sentence: string, matches: SentenceMatch[]): Sentence {
+    return new Sentence(this.context, sentence, matches, true);
   }
   fromRedis(obj: { data: Buffer }, sentence: string) {
     const { data } = obj;
@@ -78,7 +76,7 @@ export class SentenceRepository extends Repository<Sentence, string> {
     return entity;
   }
 
-  public save(e: Sentence): unknown {
+  public async save(e: Sentence): Promise<unknown> {
     e.updated = false;
     return this.context.transaction.append(this.prefix + e.key, Buffer.from(e.toRedis(), 'hex'));
   }
