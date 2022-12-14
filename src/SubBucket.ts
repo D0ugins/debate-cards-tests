@@ -134,7 +134,6 @@ class SubBucket implements DynamicKeyEntity<number>, CardSet {
 
     const setSubBuckets = await thisBucketSet.getSubBuckets();
     for (const bucketSet of newMatchBucketSets) {
-      // if (this.key === 23274) debugger;
       if (shouldMerge(setSubBuckets, await bucketSet.getSubBuckets())) thisBucketSet.merge(bucketSet);
       // TODO restart with changed updates array since a new card might match entire bucketSet
     }

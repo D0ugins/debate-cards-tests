@@ -293,9 +293,6 @@ async function movePy() {
   console.log('Started');
   await redis.connect();
   // await movePy();
-  // const context = new RedisContext(redis);
-  // const a = await context.subBucketRepository.get(2653);
-  // const b = await context.subBucketRepository.get(23274);
   await dedup();
   // await membership(true);
   // await membership(false);

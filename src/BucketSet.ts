@@ -78,7 +78,6 @@ class BucketSet implements DynamicKeyEntity<number, string[]> {
         subBucket.bucketSetId = subBucket.key;
         this._subBucketIds.delete(subBucket.key);
         console.log(`Removed ${subBucket.key} from ${this.createKey()}`);
-        debugger;
         return this.resolve();
       }
     }
