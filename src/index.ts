@@ -3,6 +3,7 @@ import { PrismaClient } from '@prisma/client';
 import _, { isEmpty, maxBy, uniq } from 'lodash';
 import { Queue } from 'typescript-collections';
 
+export const BUCKETID = 853;
 export const dedupQueue = new Queue<number>();
 export const db = new PrismaClient();
 export const redis = createClient({
@@ -87,7 +88,7 @@ export abstract class Repository<E extends BaseEntity<string | number, unknown>,
     return this.cache.get(key);
   }
 
-  public async getMany(keys: K[]): Promise<(E | null)[]> {
+  public async getMany(keys: readonly K[]): Promise<(E | null)[]> {
     return Promise.all(keys.map((key) => this.get(key)));
   }
 
@@ -176,7 +177,7 @@ import { SubBucketEntity, SubBucketRepository } from './SubBucket';
 import { CardSubBucketRepository } from './CardSubBucket';
 import { SentenceRepository } from './Sentence';
 import { CardLengthRepository } from './CardLength';
-import { BucketSetRepository } from './BucketSet';
+import { BucketSetRepository, cardSet, shouldMerge } from './BucketSet';
 import { readFile, writeFile } from 'fs/promises';
 export class RedisContext {
   sentenceRepository: SentenceRepository;
@@ -252,16 +253,23 @@ const drain = async () => {
   setImmediate(drain);
 };
 
+const loadCards = (id: number = BUCKETID) =>
+  db.evidence.findMany({
+    where: { bucketId: id },
+    select: { id: true },
+    orderBy: { id: 'asc' },
+  });
+
 async function dedup() {
   await redis.flushDb();
-  const ids = await db.evidence.findMany({ where: { bucketId: 876 }, select: { id: true }, orderBy: { id: 'asc' } });
+  const ids = await loadCards();
   for (const { id } of ids) dedupQueue.add(id);
   console.time('dedup');
   return drain();
 }
 
 async function membership(useBucketSet: boolean) {
-  const ids = await db.evidence.findMany({ where: { bucketId: 876 }, select: { id: true }, orderBy: { id: 'asc' } });
+  const ids = await loadCards();
   const { cardSubBucketRepository } = new RedisContext(redis);
 
   const memberships = new Map<number, number[]>();
@@ -274,19 +282,25 @@ async function membership(useBucketSet: boolean) {
     }),
   );
   const data = Object.fromEntries([...memberships.entries()].map(([key, value]) => [key, value.sort((a, b) => a - b)]));
-  const p = useBucketSet ? './data/jsSetMembership.json' : './data/jsMembership.json';
+  const p = useBucketSet ? './data/853jsSetMembership.json' : './data/853jsMembership.json';
+
+  console.log(
+    Object.entries(data)
+      .map(([key, value]) => value.length)
+      .sort((a, b) => a - b),
+  );
   console.log('Writing');
   await writeFile(p, JSON.stringify(data, null, 2));
 }
 
 async function movePy() {
-  const data: Record<string, number[]> = JSON.parse(await readFile('joined876_membership.json', 'utf-8'));
+  const data: Record<string, number[]> = JSON.parse(await readFile('joined853_membershipSets.json', 'utf-8'));
   const sorted = Object.fromEntries(
     Object.entries(data)
       .sort((a, b) => +a[0] - +b[0])
       .map((entry) => [entry[0], entry[1].sort((a, b) => a - b)]),
   );
-  await writeFile('./data/pyMembership.json', JSON.stringify(sorted, null, 2));
+  await writeFile('./data/853pySetMembership.json', JSON.stringify(sorted, null, 2));
 }
 
 (async () => {
@@ -296,5 +310,13 @@ async function movePy() {
   await dedup();
   // await membership(true);
   // await membership(false);
+  // const context = new RedisContext(redis);
+  // const a = await context.subBucketRepository.get(522457);
+  // const b = await context.subBucketRepository.get(632787);
+  // const c = await context.subBucketRepository.get(1337638);
+  // const c = await context.subBucketRepository.get()
+  // console.log(shouldMerge([b], [a, c]));
+  // await b.resolve([...b.]);
+
   // redis.disconnect();
 })();

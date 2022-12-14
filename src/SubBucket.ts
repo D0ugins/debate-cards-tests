@@ -102,41 +102,50 @@ class SubBucket implements DynamicKeyEntity<number>, CardSet {
     dedupQueue.add(id);
   }
 
-  async resolve(updates: readonly number[], removed: boolean = false) {
-    if (this.size === 0) return;
+  async resolveUpdates(canidates: readonly number[]) {
+    const thisBucketSet = await this.getBucketSet();
+    const canidateSubBuckets = (await this.context.cardSubBucketRepository.getMany(canidates))
+      .filter((s) => s?.subBucket)
+      .map((s) => s.subBucket)
+      .filter((subBucket) => subBucket.bucketSetId != this.bucketSetId);
+    const canidateBucketSets = new Set(
+      await Promise.all(canidateSubBuckets.map((subBucket) => subBucket.getBucketSet())),
+    );
+
+    if (!canidateBucketSets.size) return;
+    const setSubBuckets = await thisBucketSet.getSubBuckets();
+    for (const bucketSet of canidateBucketSets) {
+      if (shouldMerge(setSubBuckets, await bucketSet.getSubBuckets())) {
+        await thisBucketSet.merge(bucketSet);
+        return this.resolveUpdates([...this.matching.keys()]); // Anything might match now
+      }
+    }
+  }
+
+  private async resolveRemoves() {
     for (const [cardId, count] of this.cards) {
       if (!SHOULD_MATCH(count, this.size)) {
         await this.removeCard(cardId);
-        return this.resolve(updates, true);
+        return this.resolveRemoves();
       }
     }
-    if (removed) await (await this.getBucketSet()).resolve();
+  }
 
-    updates = updates.filter((id) => !this.cards.has(id));
-    // Filter out things that we can garuntee were already counted as matching
-    const dontMatch = updates.filter((subBucketId) => !SHOULD_MERGE(this.matching.get(subBucketId) - 1, Infinity));
-    if (dontMatch.length === 0) return;
-
+  async resolve(updates: readonly number[], removed: boolean = false) {
     const thisBucketSet = await this.getBucketSet();
+
+    await this.resolveRemoves();
+    // Filter out things that we can garuntee were already counted as matching
+    const dontMatch = updates
+      .filter((id) => !this.cards.has(id))
+      .filter((subBucketId) => !SHOULD_MERGE(this.matching.get(subBucketId) - 1, Infinity));
     const { matching: setMatching, size: setSize } = cardSet(await thisBucketSet.getSubBuckets());
     // If there are updated cards that might not have already matched, check if they didnt match before and do now
     const newMatches = dontMatch.filter(
       (id) => SHOULD_MERGE(setMatching.get(id), setSize) && !SHOULD_MERGE(setMatching.get(id) - 1, setSize),
     );
 
-    const newMatchSubBuckets = (await this.context.cardSubBucketRepository.getMany(newMatches))
-      .filter((s) => s?.subBucket)
-      .map((s) => s.subBucket)
-      .filter((subBucket) => subBucket.bucketSetId != this.bucketSetId);
-    const newMatchBucketSets = new Set(
-      await Promise.all(newMatchSubBuckets.map((subBucket) => subBucket.getBucketSet())),
-    );
-
-    const setSubBuckets = await thisBucketSet.getSubBuckets();
-    for (const bucketSet of newMatchBucketSets) {
-      if (shouldMerge(setSubBuckets, await bucketSet.getSubBuckets())) thisBucketSet.merge(bucketSet);
-      // TODO restart with changed updates array since a new card might match entire bucketSet
-    }
+    await this.resolveUpdates(newMatches);
     return thisBucketSet.resolve();
   }
 

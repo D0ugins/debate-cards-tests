@@ -57,7 +57,7 @@ class BucketSet implements DynamicKeyEntity<number, string[]> {
 
   async merge(bucketSet: BucketSet) {
     this.updated = true;
-    console.log(`Merging ${bucketSet.key} into ${this.key}`);
+    console.log(`Merging ${bucketSet.key} into ${this.key}`); // Debug
     this._subBucketIds = new Set([...this._subBucketIds, ...bucketSet.subBucketIds]);
     (await bucketSet.getSubBuckets()).forEach((subBucket) => (subBucket.bucketSetId = this.key));
   }
@@ -74,10 +74,10 @@ class BucketSet implements DynamicKeyEntity<number, string[]> {
         )
       ) {
         this.updated = true;
-        // TODO resolve subBucket after it gets removed
         subBucket.bucketSetId = subBucket.key;
         this._subBucketIds.delete(subBucket.key);
-        console.log(`Removed ${subBucket.key} from ${this.createKey()}`);
+        await subBucket.resolveUpdates([...subBucket.matching.keys()]);
+        console.log(`Removed ${subBucket.key} from ${this.createKey()}`); // Debug
         return this.resolve();
       }
     }
