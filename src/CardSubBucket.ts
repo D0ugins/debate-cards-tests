@@ -18,16 +18,16 @@ class CardSubBucket implements BaseEntity<number> {
   }
 
   toRedis() {
-    return { sb: this.subBucket.key.toString() };
+    return { sb: this.subBucket?.key.toString() };
   }
 }
 
 export class CardSubBucketRepository extends Repository<CardSubBucket, number> {
   protected prefix = 'C:';
 
-  delete(key: number) {
+  async delete(key: number) {
     this.context.transaction.hDel(this.prefix + key, 'sb');
-    delete this.cache[key];
+    (await this.get(key)).subBucket = null;
   }
 
   createNew(key: number, subBucket: SubBucketEntity) {

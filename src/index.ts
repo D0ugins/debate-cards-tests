@@ -1,9 +1,9 @@
 import { createClient, WatchError } from 'redis';
 import { PrismaClient } from '@prisma/client';
-import _, { isEmpty, maxBy, uniq } from 'lodash';
+import _, { groupBy, isEmpty, maxBy, uniq } from 'lodash';
 import { Queue } from 'typescript-collections';
 
-export const BUCKETID = 853;
+export const BUCKETID = 876;
 export const dedupQueue = new Queue<number>();
 export const db = new PrismaClient();
 export const redis = createClient({
@@ -41,7 +41,7 @@ export interface DynamicKeyEntity<K extends string | number, V = Record<string, 
 }
 
 export abstract class Repository<E extends BaseEntity<string | number, unknown>, K extends string | number> {
-  public cache: Map<K, E | Promise<E>>;
+  protected cache: Map<K, E | Promise<E>>;
   protected abstract prefix: string;
 
   constructor(protected context: RedisContext) {
@@ -92,6 +92,11 @@ export abstract class Repository<E extends BaseEntity<string | number, unknown>,
     return Promise.all(keys.map((key) => this.get(key)));
   }
 
+  public async getUpdated() {
+    if (this.prefix === 'C:' && this.context.bucketSetRepository.cache.has(259447)) debugger;
+    return (await Promise.all(this.cache.values())).filter((e) => e?.updated);
+  }
+
   public async save(e: E): Promise<unknown> {
     e.updated = false;
     const key = e.key.toString();
@@ -101,11 +106,8 @@ export abstract class Repository<E extends BaseEntity<string | number, unknown>,
   }
 
   public async saveAll() {
-    for (const [key, value] of this.cache) {
-      const entity = await value;
-      if (!entity) continue;
-      if (entity.updated) await this.save(entity);
-    }
+    const updated = await this.getUpdated();
+    return Promise.all(updated.map((entity) => this.save(entity)));
   }
 }
 
@@ -177,8 +179,14 @@ import { SubBucketEntity, SubBucketRepository } from './SubBucket';
 import { CardSubBucketRepository } from './CardSubBucket';
 import { SentenceRepository } from './Sentence';
 import { CardLengthRepository } from './CardLength';
-import { BucketSetRepository, cardSet, shouldMerge } from './BucketSet';
+import { BucketSetRepository } from './BucketSet';
 import { readFile, writeFile } from 'fs/promises';
+
+type Update = {
+  bucketId: number;
+  cardIds: number[];
+};
+
 export class RedisContext {
   sentenceRepository: SentenceRepository;
   cardLengthRepository: CardLengthRepository;
@@ -196,27 +204,44 @@ export class RedisContext {
     this.bucketSetRepository = new BucketSetRepository(this);
   }
 
-  async finish(save: boolean = true) {
-    if (save) {
-      await this.subBucketRepository.propogateAllKeys();
-      await this.bucketSetRepository.propogateAllKeys();
+  async finish(save: boolean = true): Promise<Update[]> {
+    await this.subBucketRepository.propogateAllKeys();
+    await this.bucketSetRepository.propogateAllKeys();
+    const cardSubBucketUpdated = await this.cardSubBucketRepository.getUpdated();
+    const subBucketUpdated = await this.subBucketRepository.getUpdated();
+    // const bucketSetUpdated = await this.bucketSetRepository.getUpdated();
 
+    if (save) {
       await this.subBucketRepository.saveAll();
       await this.cardLengthRepository.saveAll();
       await this.cardSubBucketRepository.saveAll();
       await this.sentenceRepository.saveAll();
       await this.bucketSetRepository.saveAll();
     }
-    return this.transaction.exec();
+    await this.transaction.exec();
+
+    // const group = groupBy(cardSubBucketUpdated, ({ subBucket }) => subBucket?.bucketSetId ?? null);
+    const cardUpdates = cardSubBucketUpdated.map(({ key, subBucket }) => ({
+      bucketId: subBucket?.bucketSetId ?? null,
+      cardIds: [key],
+    }));
+    const subBucketUpdates = subBucketUpdated
+      .filter(({ originalBucketSetId, bucketSetId }) => originalBucketSetId !== bucketSetId)
+      .map(({ members, bucketSetId }) => ({ bucketId: bucketSetId, cardIds: members }));
+
+    return Object.entries(groupBy(cardUpdates.concat(subBucketUpdates), 'bucketId')).map(([key, values]) => ({
+      bucketId: +key,
+      cardIds: values.flatMap((value) => value.cardIds),
+    }));
   }
 }
 
-async function processCard(context: RedisContext, id: number, sentences: string[]) {
+async function processCard(context: RedisContext, id: number, sentences: string[]): Promise<Update[]> {
   try {
     const matchedCards = await getMatching(context, id);
     const bucketCandidates = uniq(
       await Promise.all(matchedCards.map(async (id) => (await context.cardSubBucketRepository.get(id))?.subBucket)),
-    ).filter((el) => el); //
+    ).filter((el) => el);
     bucketCandidates.forEach((b) => b.setMatches(id, matchedCards));
     const matchedBuckets = bucketCandidates.filter((b) => b.doesBucketMatch(matchedCards));
 
@@ -240,16 +265,41 @@ async function processCard(context: RedisContext, id: number, sentences: string[
   }
 }
 
+const mockDB = new Map<number, number>();
+
+const saveMockDB = () => {
+  const memberships = new Map<number, number[]>();
+  for (const [cardId, bucket] of mockDB) {
+    if (!memberships.has(bucket)) memberships.set(bucket, []);
+    memberships.get(bucket).push(cardId);
+  }
+  const data = Object.fromEntries([...memberships.entries()].map(([key, value]) => [key, value.sort((a, b) => a - b)]));
+  const p = './data/dbSetMembership.json';
+
+  console.log(
+    Object.entries(data)
+      .map(([_, value]) => value.length)
+      .sort((a, b) => a - b),
+  );
+  console.log('Writing');
+  return writeFile(p, JSON.stringify(data, null, 2));
+};
+
 const drain = async () => {
   if (dedupQueue.size() % 10 == 0) console.timeLog('dedup', dedupQueue.size());
 
   const id = dedupQueue.dequeue();
   if (!id) {
     console.timeEnd('dedup');
+    await saveMockDB();
     return redis.disconnect();
   }
   const context = new RedisContext(redis);
-  await processCard(context, id, (await loadSentences(id)) ?? []);
+  const updates = await processCard(context, id, (await loadSentences(id)) ?? []);
+  for (const { bucketId, cardIds } of updates) {
+    for (const id of cardIds) mockDB.set(id, bucketId);
+  }
+
   setImmediate(drain);
 };
 

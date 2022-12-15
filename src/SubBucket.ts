@@ -11,6 +11,7 @@ export interface CardSet {
 export type SubBucketEntity = SubBucket;
 class SubBucket implements DynamicKeyEntity<number>, CardSet {
   public key: number;
+  public readonly originalBucketSetId: number;
   constructor(
     public context: RedisContext,
     private _cards: Map<number, number>,
@@ -19,6 +20,7 @@ class SubBucket implements DynamicKeyEntity<number>, CardSet {
     public updated: boolean = false,
   ) {
     this.key = this.createKey();
+    this.originalBucketSetId = _bucketSetId;
   }
 
   public createKey(): number {
@@ -60,7 +62,7 @@ class SubBucket implements DynamicKeyEntity<number>, CardSet {
   }
 
   async getCards() {
-    return Promise.all(this.members.map(async (cardId) => await this.context.cardSubBucketRepository.get(cardId)));
+    return Promise.all(this.members.map((cardId) => this.context.cardSubBucketRepository.get(cardId)));
   }
 
   async getBucketSet() {
@@ -93,7 +95,7 @@ class SubBucket implements DynamicKeyEntity<number>, CardSet {
   async removeCard(id: number) {
     this.updated = true;
     this._cards.delete(id);
-    this.context.cardSubBucketRepository.delete(id);
+    await this.context.cardSubBucketRepository.delete(id);
     for (const match of await getMatching(this.context, id)) {
       const counter = this.cards.has(match) ? this._cards : this._matching;
       if (counter.get(match) <= 1) counter.delete(match);
