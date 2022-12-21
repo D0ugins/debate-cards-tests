@@ -25,7 +25,7 @@ class CardSubBucket implements BaseEntity<number> {
 export class CardSubBucketRepository extends Repository<CardSubBucket, number> {
   protected prefix = 'C:';
 
-  async delete(key: number) {
+  async reset(key: number) {
     this.context.transaction.hDel(this.prefix + key, 'sb');
     (await this.get(key)).subBucket = null;
   }

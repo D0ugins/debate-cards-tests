@@ -1,4 +1,4 @@
-import { union } from 'lodash';
+import { filter, union } from 'lodash';
 import { DynamicKeyEntity, RedisContext, Repository, SHOULD_MERGE } from '.';
 import { CardSet, SubBucketEntity } from './SubBucket';
 
@@ -24,9 +24,10 @@ export type BucketSetEntity = BucketSet;
 class BucketSet implements DynamicKeyEntity<number, string[]> {
   private _subBucketIds: Set<number>;
   public key: number;
+  public readonly originalKey: number;
   constructor(public context: RedisContext, subBucketIds: number[], public updated: boolean = false) {
     this._subBucketIds = new Set(subBucketIds);
-    this.key = this.createKey();
+    this.originalKey = this.key = this.createKey();
   }
 
   public async propogateKey() {
@@ -46,20 +47,40 @@ class BucketSet implements DynamicKeyEntity<number, string[]> {
   }
 
   async getSubBuckets(): Promise<readonly SubBucketEntity[]> {
-    return Promise.all(this.subBucketIds.map((id) => this.context.subBucketRepository.get(id)));
+    return this.context.subBucketRepository.getMany(this.subBucketIds);
   }
 
   async renameBucket(oldKey: number, newKey: number): Promise<void> {
     this.updated = true;
     this._subBucketIds.delete(oldKey);
     this._subBucketIds.add(newKey);
+    return this.propogateKey();
   }
 
   async merge(bucketSet: BucketSet) {
     this.updated = true;
-    console.log(`Merging ${bucketSet.key} into ${this.key}`); // Debug
+    this.context.bucketSetRepository.delete(bucketSet.key);
+
     this._subBucketIds = new Set([...this._subBucketIds, ...bucketSet.subBucketIds]);
-    (await bucketSet.getSubBuckets()).forEach((subBucket) => (subBucket.bucketSetId = this.key));
+    bucketSet.updated = true;
+    bucketSet._subBucketIds = new Set();
+    console.log(`Merged ${bucketSet.key} into ${this.key}=>${this.createKey()}`); // Debug
+
+    (await this.getSubBuckets()).forEach((subBucket) => (subBucket.bucketSetId = this.key));
+    return this.propogateKey();
+  }
+
+  async removeSubBucket(subBucket: SubBucketEntity) {
+    debugger;
+    this.updated = true;
+    this._subBucketIds.delete(subBucket.key);
+    await this.propogateKey();
+
+    const newBucketSet = this.context.bucketSetRepository.create(subBucket.key, [subBucket.key]);
+    subBucket.bucketSetId = newBucketSet.key;
+
+    await subBucket.resolveUpdates([...subBucket.matching.keys()]);
+    console.log(`Removed ${subBucket.key} from ${this.key}=>${this.createKey()}`); // Debug
   }
 
   async resolve(): Promise<void> {
@@ -73,11 +94,7 @@ class BucketSet implements DynamicKeyEntity<number, string[]> {
           [subBucket],
         )
       ) {
-        this.updated = true;
-        subBucket.bucketSetId = subBucket.key;
-        this._subBucketIds.delete(subBucket.key);
-        await subBucket.resolveUpdates([...subBucket.matching.keys()]);
-        console.log(`Removed ${subBucket.key} from ${this.createKey()}`); // Debug
+        await this.removeSubBucket(subBucket);
         return this.resolve();
       }
     }
@@ -106,14 +123,10 @@ export class BucketSetRepository extends Repository<BucketSet, number> {
     return new BucketSet(this.context, subBucketIds, true);
   }
 
-  async propogateAllKeys() {
-    return Promise.all([...this.cache.values()].map(async (subBucket) => (await subBucket).propogateKey()));
-  }
-
   async save(e: BucketSet) {
     e.updated = false;
-    if (e.subBucketIds.length <= 1) return; // Dont bother saving sigle member bucket sets4
-    this.context.transaction.del(this.prefix + e.key);
+    this.context.transaction.del(this.prefix + e.originalKey);
+    if (e.subBucketIds.length <= 1) return; // Dont bother saving sigle member bucket sets
     return this.context.transaction.sAdd(this.prefix + e.key, e.toRedis());
   }
 }

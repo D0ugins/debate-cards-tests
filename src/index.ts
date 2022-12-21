@@ -1,6 +1,6 @@
 import { createClient, WatchError } from 'redis';
 import { PrismaClient } from '@prisma/client';
-import _, { groupBy, isEmpty, maxBy, uniq } from 'lodash';
+import _, { isEmpty, maxBy, uniq } from 'lodash';
 import { Queue } from 'typescript-collections';
 
 export const BUCKETID = 876;
@@ -43,9 +43,11 @@ export interface DynamicKeyEntity<K extends string | number, V = Record<string, 
 export abstract class Repository<E extends BaseEntity<string | number, unknown>, K extends string | number> {
   protected cache: Map<K, E | Promise<E>>;
   protected abstract prefix: string;
+  public deletions: Set<K>;
 
   constructor(protected context: RedisContext) {
     this.cache = new Map();
+    this.deletions = new Set();
   }
 
   protected getKeys(keys: K[]): Promise<Record<string, string>[]> {
@@ -73,6 +75,11 @@ export abstract class Repository<E extends BaseEntity<string | number, unknown>,
     this.context.transaction.del(this.prefix + oldKey);
   }
 
+  public delete(key: K) {
+    this.cache.set(key, null);
+    this.deletions.add(key);
+  }
+
   protected async loadRedis(key: K) {
     const obj = await this.getKey(key);
     if (isEmpty(obj)) return null;
@@ -93,7 +100,6 @@ export abstract class Repository<E extends BaseEntity<string | number, unknown>,
   }
 
   public async getUpdated() {
-    if (this.prefix === 'C:' && this.context.bucketSetRepository.cache.has(259447)) debugger;
     return (await Promise.all(this.cache.values())).filter((e) => e?.updated);
   }
 
@@ -107,6 +113,8 @@ export abstract class Repository<E extends BaseEntity<string | number, unknown>,
 
   public async saveAll() {
     const updated = await this.getUpdated();
+    for (const key of this.deletions) this.context.transaction.del(this.prefix + key);
+    this.deletions = new Set();
     return Promise.all(updated.map((entity) => this.save(entity)));
   }
 }
@@ -182,9 +190,12 @@ import { CardLengthRepository } from './CardLength';
 import { BucketSetRepository } from './BucketSet';
 import { readFile, writeFile } from 'fs/promises';
 
-type Update = {
-  bucketId: number;
-  cardIds: number[];
+type Updates = {
+  updates: {
+    bucketId: number;
+    cardIds: number[];
+  }[];
+  deletes: number[];
 };
 
 export class RedisContext {
@@ -204,39 +215,40 @@ export class RedisContext {
     this.bucketSetRepository = new BucketSetRepository(this);
   }
 
-  async finish(save: boolean = true): Promise<Update[]> {
-    await this.subBucketRepository.propogateAllKeys();
-    await this.bucketSetRepository.propogateAllKeys();
-    const cardSubBucketUpdated = await this.cardSubBucketRepository.getUpdated();
-    const subBucketUpdated = await this.subBucketRepository.getUpdated();
-    // const bucketSetUpdated = await this.bucketSetRepository.getUpdated();
+  async finish(): Promise<Updates> {
+    let updatedBucketSets = await this.bucketSetRepository.getMany(
+      (await this.subBucketRepository.getUpdated()).map((subBucket) => subBucket.bucketSetId),
+    );
+    updatedBucketSets = updatedBucketSets.concat(await this.bucketSetRepository.getUpdated());
+    updatedBucketSets = uniq(updatedBucketSets);
 
-    if (save) {
-      await this.subBucketRepository.saveAll();
-      await this.cardLengthRepository.saveAll();
-      await this.cardSubBucketRepository.saveAll();
-      await this.sentenceRepository.saveAll();
-      await this.bucketSetRepository.saveAll();
-    }
+    const deletedBucketSets = this.bucketSetRepository.deletions;
+
+    await this.subBucketRepository.saveAll();
+    await this.cardLengthRepository.saveAll();
+    await this.cardSubBucketRepository.saveAll();
+    await this.sentenceRepository.saveAll();
+    await this.bucketSetRepository.saveAll();
     await this.transaction.exec();
 
-    // const group = groupBy(cardSubBucketUpdated, ({ subBucket }) => subBucket?.bucketSetId ?? null);
-    const cardUpdates = cardSubBucketUpdated.map(({ key, subBucket }) => ({
-      bucketId: subBucket?.bucketSetId ?? null,
-      cardIds: [key],
-    }));
-    const subBucketUpdates = subBucketUpdated
-      .filter(({ originalBucketSetId, bucketSetId }) => originalBucketSetId !== bucketSetId)
-      .map(({ members, bucketSetId }) => ({ bucketId: bucketSetId, cardIds: members }));
+    const deletes = updatedBucketSets
+      .filter((bucketSet) => bucketSet.originalKey !== bucketSet.key)
+      .map((bucket) => bucket.originalKey)
+      .concat([...deletedBucketSets]);
 
-    return Object.entries(groupBy(cardUpdates.concat(subBucketUpdates), 'bucketId')).map(([key, values]) => ({
-      bucketId: +key,
-      cardIds: values.flatMap((value) => value.cardIds),
-    }));
+    return {
+      updates: await Promise.all(
+        updatedBucketSets.map(async (bucketSet) => ({
+          bucketId: bucketSet.key,
+          cardIds: (await bucketSet.getSubBuckets()).flatMap((bucket) => bucket?.members),
+        })),
+      ),
+      deletes,
+    };
   }
 }
 
-async function processCard(context: RedisContext, id: number, sentences: string[]): Promise<Update[]> {
+async function processCard(context: RedisContext, id: number, sentences: string[]): Promise<Updates> {
   try {
     const matchedCards = await getMatching(context, id);
     const bucketCandidates = uniq(
@@ -250,30 +262,24 @@ async function processCard(context: RedisContext, id: number, sentences: string[
       addBucket = context.subBucketRepository.create(id, matchedCards);
     } else {
       addBucket = maxBy(matchedBuckets, (b) => b.size) ?? matchedBuckets[0];
-      addBucket.addCard(id, matchedCards);
+      await addBucket.addCard(id, matchedCards);
     }
 
     await addBucket.resolve(matchedCards);
     context.cardLengthRepository.create(id, sentences.length);
-    context.cardSubBucketRepository.create(id, addBucket);
     const sentenceEntities = await Promise.all(sentences.map((s) => context.sentenceRepository.get(s)));
     sentenceEntities.forEach((entity, i) => entity.addMatch({ cardId: id, index: i }));
-    return context.finish(true);
+    return context.finish();
   } catch (err) {
     if (err instanceof WatchError) return processCard(context, id, sentences);
     else throw err;
   }
 }
 
-const mockDB = new Map<number, number>();
+const mockDB = new Map<number, number[]>();
 
 const saveMockDB = () => {
-  const memberships = new Map<number, number[]>();
-  for (const [cardId, bucket] of mockDB) {
-    if (!memberships.has(bucket)) memberships.set(bucket, []);
-    memberships.get(bucket).push(cardId);
-  }
-  const data = Object.fromEntries([...memberships.entries()].map(([key, value]) => [key, value.sort((a, b) => a - b)]));
+  const data = Object.fromEntries([...mockDB.entries()].map(([key, value]) => [key, value.sort((a, b) => a - b)]));
   const p = './data/dbSetMembership.json';
 
   console.log(
@@ -295,10 +301,10 @@ const drain = async () => {
     return redis.disconnect();
   }
   const context = new RedisContext(redis);
-  const updates = await processCard(context, id, (await loadSentences(id)) ?? []);
-  for (const { bucketId, cardIds } of updates) {
-    for (const id of cardIds) mockDB.set(id, bucketId);
-  }
+  const { updates, deletes } = await processCard(context, id, (await loadSentences(id)) ?? []);
+
+  for (const del of deletes) mockDB.delete(del);
+  for (const { bucketId, cardIds } of updates) mockDB.set(bucketId, cardIds);
 
   setImmediate(drain);
 };

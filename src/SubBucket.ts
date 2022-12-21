@@ -11,7 +11,6 @@ export interface CardSet {
 export type SubBucketEntity = SubBucket;
 class SubBucket implements DynamicKeyEntity<number>, CardSet {
   public key: number;
-  public readonly originalBucketSetId: number;
   constructor(
     public context: RedisContext,
     private _cards: Map<number, number>,
@@ -20,7 +19,6 @@ class SubBucket implements DynamicKeyEntity<number>, CardSet {
     public updated: boolean = false,
   ) {
     this.key = this.createKey();
-    this.originalBucketSetId = _bucketSetId;
   }
 
   public createKey(): number {
@@ -32,9 +30,15 @@ class SubBucket implements DynamicKeyEntity<number>, CardSet {
     if (newKey === this.key) return;
 
     const cards = await this.getCards();
+    if (cards.length === 0) {
+      console.log(`Deleting SubBucket ${this.key}`);
+      await (await this.getBucketSet()).removeSubBucket(this);
+      return this.context.subBucketRepository.delete(this.key);
+    }
+
     cards.forEach((card) => (card.updated = true)); // Has reference to this, so key gets updated on save
-    (await this.getBucketSet()).renameBucket(this.key, newKey);
     this.context.subBucketRepository.renameCacheKey(this.key, newKey);
+    (await this.getBucketSet()).renameBucket(this.key, newKey);
     this.key = newKey;
   }
 
@@ -62,7 +66,7 @@ class SubBucket implements DynamicKeyEntity<number>, CardSet {
   }
 
   async getCards() {
-    return Promise.all(this.members.map((cardId) => this.context.cardSubBucketRepository.get(cardId)));
+    return this.context.cardSubBucketRepository.getMany(this.members);
   }
 
   async getBucketSet() {
@@ -73,7 +77,7 @@ class SubBucket implements DynamicKeyEntity<number>, CardSet {
     return SHOULD_MATCH(intersection(matches, this.members).length, this.size);
   }
 
-  addCard(id: number, matches: number[]) {
+  async addCard(id: number, matches: number[]) {
     this.updated = true;
     this._matching.delete(id);
     if (this.cards.has(id)) return console.log(`Warning: ${id} already in bucket ${this.key}`);
@@ -85,6 +89,8 @@ class SubBucket implements DynamicKeyEntity<number>, CardSet {
         this._cards.set(match, this.cards.get(match) + 1);
       } else this._matching.set(match, (this.matching.get(match) ?? 0) + 1);
     }
+    this.context.cardSubBucketRepository.create(id, this);
+    return this.propogateKey();
   }
 
   setMatches(id: number, matches: number[]) {
@@ -95,13 +101,14 @@ class SubBucket implements DynamicKeyEntity<number>, CardSet {
   async removeCard(id: number) {
     this.updated = true;
     this._cards.delete(id);
-    await this.context.cardSubBucketRepository.delete(id);
+    await this.context.cardSubBucketRepository.reset(id);
     for (const match of await getMatching(this.context, id)) {
       const counter = this.cards.has(match) ? this._cards : this._matching;
       if (counter.get(match) <= 1) counter.delete(match);
       else counter.set(match, counter.get(match) - 1);
     }
     dedupQueue.add(id);
+    return this.propogateKey();
   }
 
   async resolveUpdates(canidates: readonly number[]) {
@@ -148,6 +155,7 @@ class SubBucket implements DynamicKeyEntity<number>, CardSet {
     );
 
     await this.resolveUpdates(newMatches);
+    await this.propogateKey();
     return thisBucketSet.resolve();
   }
 
@@ -165,16 +173,14 @@ export class SubBucketRepository extends Repository<SubBucket, number> {
   createNew(root: number, matches: number[]) {
     const cards = new Map([[root, 1]]);
     const matchMap = new Map(matches.map((match) => [match, 1]));
-    return new SubBucket(this.context, cards, matchMap, root, true);
+    const subBucket = new SubBucket(this.context, cards, matchMap, root, true);
+    this.context.cardSubBucketRepository.create(root, subBucket);
+    return subBucket;
   }
 
   save(e: SubBucket) {
     this.context.transaction.del(`${this.prefix}${e.key.toString()}`);
     return super.save(e);
-  }
-
-  async propogateAllKeys() {
-    return Promise.all([...this.cache.values()].map(async (subBucket) => (await subBucket).propogateKey()));
   }
 
   fromRedis(obj: Record<string, string>, key: number) {
