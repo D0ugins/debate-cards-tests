@@ -71,7 +71,6 @@ class BucketSet implements DynamicKeyEntity<number, string[]> {
   }
 
   async removeSubBucket(subBucket: SubBucketEntity) {
-    debugger;
     this.updated = true;
     this._subBucketIds.delete(subBucket.key);
     await this.propogateKey();

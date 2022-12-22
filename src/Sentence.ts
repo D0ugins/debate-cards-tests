@@ -41,7 +41,7 @@ class Sentence implements BaseEntity<string, string> {
 
   toRedis() {
     return this._additions
-      .map(({ cardId, index }) => this.subKey + paddedHex(cardId, 8) + paddedHex(index, 4))
+      .map(({ matchId, index }) => this.subKey + paddedHex(matchId, 8) + paddedHex(index, 4))
       .join('');
   }
 }
@@ -61,7 +61,7 @@ export class SentenceRepository extends Repository<Sentence, string> {
     const matches: SentenceMatch[] = [];
     for (let i = 0; i < data.length; i += 11) {
       if (data.readUIntBE(i, 5) != parseInt(subKey, 16)) continue;
-      matches.push({ cardId: data.readUIntBE(i + 5, 4), index: data.readUIntBE(i + 9, 2) });
+      matches.push({ matchId: data.readUIntBE(i + 5, 4), index: data.readUIntBE(i + 9, 2) });
     }
     return new Sentence(this.context, sentence, matches);
   }

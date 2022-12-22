@@ -25,7 +25,7 @@ export const getSentences = (text: string, cutoff = 20): string[] | undefined =>
     .map((el) => el.replace(/[^A-Z]/gi, '').toLowerCase())
     .filter((el: string) => el.length >= cutoff);
 };
-export type SentenceMatch = { cardId: number; index: number };
+export type SentenceMatch = { matchId: number; index: number };
 export type RedisTransaction = ReturnType<typeof redis['multi']>;
 
 export interface BaseEntity<K extends string | number, V = Record<string, string>> {
@@ -139,7 +139,10 @@ const checkMatch = (
 // // Check in both orders
 const isMatch = (info: MatchPair) => checkMatch(info.a, info.b) || checkMatch(info.b, info.a);
 
-export async function getMatching(context: RedisContext, cardId: number): Promise<number[]> {
+export async function getMatching(
+  context: RedisContext,
+  cardId: number,
+): Promise<{ matches: number[]; existingSentences: boolean }> {
   const sentences = (await loadSentences(cardId)) ?? [];
   /* 
     Watch for change in sentences, prevents new card being added that this card should match and it being missed
@@ -149,29 +152,29 @@ export async function getMatching(context: RedisContext, cardId: number): Promis
     sentencesPerCard seems to be roughly 30
     With 25 concurrent deduplications happening, and 2^20 buckets, probability is around 0.98
   */
-  const sentenceEntities = await Promise.all(sentences.map((s) => context.sentenceRepository.get(s)));
-  const cardLens: Record<number, number> = {};
-  await Promise.all(
-    _(sentenceEntities)
-      .map('matches')
-      .flatten()
-      .map('cardId')
-      .uniq()
-      .map(async (id) => (cardLens[id] = (await context.cardLengthRepository.get(id)).length))
-      .value(),
+  const sentenceEntities = await context.sentenceRepository.getMany(sentences);
+  const canidateIds = uniq(sentenceEntities.flatMap((entity) => entity.matches).map((match) => match.matchId));
+  const cardLens = (await context.cardLengthRepository.getMany(canidateIds)).reduce<Record<number, number>>(
+    (prev, current, i) => {
+      prev[canidateIds[i]] = current.length;
+      return prev;
+    },
+    {},
   );
+
   const matchInfo: Record<string, MatchPair> = {};
   for (let aIndex = 0; aIndex < sentenceEntities.length; aIndex++) {
     const matches = sentenceEntities[aIndex].matches;
-    for (const { cardId, index: bIndex } of matches) {
-      if (!(cardId in matchInfo))
-        matchInfo[cardId] = {
+    for (const { matchId, index: bIndex } of matches) {
+      if (matchId === cardId) continue;
+      if (!(matchId in matchInfo))
+        matchInfo[matchId] = {
           a: { cardLen: sentenceEntities.length, min: aIndex, max: aIndex },
-          b: { cardLen: cardLens[cardId], min: bIndex, max: bIndex },
+          b: { cardLen: cardLens[matchId], min: bIndex, max: bIndex },
         };
       else {
-        matchInfo[cardId].a.max = aIndex;
-        matchInfo[cardId].b.max = bIndex;
+        matchInfo[matchId].a.max = aIndex;
+        matchInfo[matchId].b.max = bIndex;
       }
     }
   }
@@ -180,7 +183,7 @@ export async function getMatching(context: RedisContext, cardId: number): Promis
   for (const id in matchInfo) {
     if (isMatch(matchInfo[id])) matches.push(+id);
   }
-  return matches;
+  return { matches, existingSentences: canidateIds.includes(cardId) };
 }
 
 import { SubBucketEntity, SubBucketRepository } from './SubBucket';
@@ -250,7 +253,7 @@ export class RedisContext {
 
 async function processCard(context: RedisContext, id: number, sentences: string[]): Promise<Updates> {
   try {
-    const matchedCards = await getMatching(context, id);
+    const { existingSentences, matches: matchedCards } = await getMatching(context, id);
     const bucketCandidates = uniq(
       await Promise.all(matchedCards.map(async (id) => (await context.cardSubBucketRepository.get(id))?.subBucket)),
     ).filter((el) => el);
@@ -267,8 +270,11 @@ async function processCard(context: RedisContext, id: number, sentences: string[
 
     await addBucket.resolve(matchedCards);
     context.cardLengthRepository.create(id, sentences.length);
-    const sentenceEntities = await Promise.all(sentences.map((s) => context.sentenceRepository.get(s)));
-    sentenceEntities.forEach((entity, i) => entity.addMatch({ cardId: id, index: i }));
+
+    if (!existingSentences) {
+      const sentenceEntities = await Promise.all(sentences.map((s) => context.sentenceRepository.get(s)));
+      sentenceEntities.forEach((entity, i) => entity.addMatch({ matchId: id, index: i }));
+    }
     return context.finish();
   } catch (err) {
     if (err instanceof WatchError) return processCard(context, id, sentences);
@@ -359,20 +365,28 @@ async function movePy() {
   await writeFile('./data/853pySetMembership.json', JSON.stringify(sorted, null, 2));
 }
 
+async function broken() {
+  const ids = await loadCards();
+  const context = new RedisContext(redis);
+
+  const subBuckets = uniq(
+    (await context.cardSubBucketRepository.getMany(ids.map((card) => card.id))).map((bucket) => bucket.subBucket),
+  );
+
+  for (const subBucket of subBuckets) {
+    console.log(subBucket.key, subBucket.size, Math.max(...subBucket.cards.values()));
+  }
+}
+
 (async () => {
   console.log('Started');
   await redis.connect();
   // await movePy();
   await dedup();
+  // await broken();
+  // const context = new RedisContext(redis);
   // await membership(true);
   // await membership(false);
-  // const context = new RedisContext(redis);
-  // const a = await context.subBucketRepository.get(522457);
-  // const b = await context.subBucketRepository.get(632787);
-  // const c = await context.subBucketRepository.get(1337638);
-  // const c = await context.subBucketRepository.get()
-  // console.log(shouldMerge([b], [a, c]));
-  // await b.resolve([...b.]);
 
   // redis.disconnect();
 })();
