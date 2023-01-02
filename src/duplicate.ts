@@ -1,4 +1,4 @@
-import { EDGE_TOLERANCE, INSIDE_TOLERANCE, SENTENCE_REGEX } from './constants';
+import { EDGE_TOLERANCE, INSIDE_TOLERANCE, QUOTE_REGEX, SENTENCE_REGEX } from './constants';
 import { RedisContext, redis } from './redis';
 import { db } from '.';
 import { SubBucketEntity } from './SubBucket';
@@ -11,7 +11,8 @@ type MatchInfo = { cardLen: number; min: number; max: number };
 type MatchPair = { a: MatchInfo; b: MatchInfo };
 export const getSentences = (text: string, cutoff = 20): string[] | undefined => {
   return text
-    ?.split(SENTENCE_REGEX)
+    ?.replaceAll(QUOTE_REGEX, '')
+    .split(SENTENCE_REGEX)
     .map((el) => el.replace(/[^A-Z]/gi, '').toLowerCase())
     .filter((el: string) => el.length >= cutoff);
 };
@@ -74,7 +75,7 @@ export async function getMatching(
   return { matches, existingSentences: canidateIds.includes(cardId) };
 }
 
-export const loadSentences = async (id: number) => {
+export const loadSentences = async (id: number): Promise<string[]> => {
   if (!id) return [];
   const card = await db.evidence.findUnique({ where: { id }, select: { id: true, fulltext: true } });
   if (!card?.fulltext) throw new Error(`Card with id ${id} does not exist`);
