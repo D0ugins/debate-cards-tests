@@ -5,7 +5,7 @@ import { readFile, writeFile } from 'fs/promises';
 import { uniq } from 'lodash';
 import { loadSentences, processCard } from './duplicate';
 
-export const BUCKETID = 958036;
+export const BUCKETID = 970324;
 export const dedupQueue = new Queue<number>();
 export const db = new PrismaClient();
 export type TagInput = {
@@ -107,11 +107,11 @@ async function broken() {
   console.log('Started');
   await redis.connect();
   // await movePy();
-  // await dedup();
+  await dedup();
   // await broken();
   // const context = new RedisContext(redis);
-  await membership(true);
-  await membership(false);
+  // await membership(false);
+  // await membership(true);
 
-  redis.disconnect();
+  // await redis.disconnect();
 })();

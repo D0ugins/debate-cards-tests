@@ -101,7 +101,7 @@ import { CardLengthRepository } from './CardLength';
 import { BucketSetRepository } from './BucketSet';
 import { Updates } from './duplicate';
 
-let i = 1692219;
+let i = 0;
 export class RedisContext {
   transaction: RedisTransaction;
   sentenceRepository: SentenceRepository;
