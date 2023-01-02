@@ -1,10 +1,13 @@
-import { intersection, uniq } from 'lodash';
-import { dedupQueue, DynamicKeyEntity, getMatching, RedisContext, Repository, SHOULD_MATCH, SHOULD_MERGE } from '.';
-import { cardSet, shouldMerge } from './BucketSet';
+import { intersection } from 'lodash';
+import { getMatching } from './duplicate';
+import { DynamicKeyEntity, RedisContext, Repository } from './redis';
+import { mergeCardSets, shouldMerge } from './BucketSet';
+import { SHOULD_MATCH, SHOULD_MERGE } from './constants';
+import { db, dedupQueue } from '.';
 
 export interface CardSet {
   size: number;
-  members: readonly number[];
+  members: Iterable<number>;
   matching: ReadonlyMap<number, number>;
 }
 
@@ -13,7 +16,9 @@ class SubBucket implements DynamicKeyEntity<number>, CardSet {
   public key: number;
   constructor(
     public context: RedisContext,
+    // Map of cardIds in bucket to how many cards in the bucket they match
     private _cards: Map<number, number>,
+    // Same as _cards, but for cards not in the bucket
     private _matching: Map<number, number>,
     private _bucketSetId: number,
     public updated: boolean = false,
@@ -31,14 +36,13 @@ class SubBucket implements DynamicKeyEntity<number>, CardSet {
 
     const cards = await this.getCards();
     if (cards.length === 0) {
-      console.log(`Deleting SubBucket ${this.key}`);
       await (await this.getBucketSet()).removeSubBucket(this);
       return this.context.subBucketRepository.delete(this.key);
     }
 
     cards.forEach((card) => (card.updated = true)); // Has reference to this, so key gets updated on save
     this.context.subBucketRepository.renameCacheKey(this.key, newKey);
-    (await this.getBucketSet()).renameBucket(this.key, newKey);
+    (await this.getBucketSet()).renameSubBucket(this.key, newKey);
     this.key = newKey;
   }
 
@@ -77,11 +81,17 @@ class SubBucket implements DynamicKeyEntity<number>, CardSet {
     return SHOULD_MATCH(intersection(matches, this.members).length, this.size);
   }
 
-  async addCard(id: number, matches: number[]) {
+  setMatches(id: number, matches: number[]) {
     this.updated = true;
-    this._matching.delete(id);
-    if (this.cards.has(id)) return console.log(`Warning: ${id} already in bucket ${this.key}`);
+    this._matching.set(id, intersection(this.members, matches).length);
+  }
 
+  async addCard(id: number, matches: number[]) {
+    this._matching.delete(id);
+    if (this.cards.has(id)) return;
+
+    this.updated = true;
+    // Update match counts
     this._cards.set(id, 1);
     for (const match of matches) {
       if (this.cards.has(match)) {
@@ -93,11 +103,6 @@ class SubBucket implements DynamicKeyEntity<number>, CardSet {
     return this.propogateKey();
   }
 
-  setMatches(id: number, matches: number[]) {
-    this.updated = true;
-    this._matching.set(id, intersection(this.members, matches).length);
-  }
-
   async removeCard(id: number) {
     this.updated = true;
     this._cards.delete(id);
@@ -107,7 +112,12 @@ class SubBucket implements DynamicKeyEntity<number>, CardSet {
       if (counter.get(match) <= 1) counter.delete(match);
       else counter.set(match, counter.get(match) - 1);
     }
+
+    // Add card back to processing queue in case it should match a different bucket
+    // const { gid } = await db.evidence.findUnique({ where: { id }, select: { gid: true } });
+    // onAddEvidence.emit({ gid });
     dedupQueue.add(id);
+
     return this.propogateKey();
   }
 
@@ -140,15 +150,16 @@ class SubBucket implements DynamicKeyEntity<number>, CardSet {
     }
   }
 
-  async resolve(updates: readonly number[], removed: boolean = false) {
-    const thisBucketSet = await this.getBucketSet();
-
+  async resolve(updates: readonly number[]) {
     await this.resolveRemoves();
+    await (await this.getBucketSet()).resolve();
+
+    const thisBucketSet = await this.getBucketSet(); // Might have changed
     // Filter out things that we can garuntee were already counted as matching
     const dontMatch = updates
       .filter((id) => !this.cards.has(id))
       .filter((subBucketId) => !SHOULD_MERGE(this.matching.get(subBucketId) - 1, Infinity));
-    const { matching: setMatching, size: setSize } = cardSet(await thisBucketSet.getSubBuckets());
+    const { matching: setMatching, size: setSize } = mergeCardSets(await thisBucketSet.getSubBuckets());
     // If there are updated cards that might not have already matched, check if they didnt match before and do now
     const newMatches = dontMatch.filter(
       (id) => SHOULD_MERGE(setMatching.get(id), setSize) && !SHOULD_MERGE(setMatching.get(id) - 1, setSize),
@@ -156,11 +167,10 @@ class SubBucket implements DynamicKeyEntity<number>, CardSet {
 
     await this.resolveUpdates(newMatches);
     await this.propogateKey();
-    return thisBucketSet.resolve();
   }
 
   toRedis() {
-    const obj: Record<string, string> = { sb: this._bucketSetId.toString() };
+    const obj: Record<string, string> = { bs: this._bucketSetId.toString() };
     for (const [cardId, count] of this.cards) obj[`c${cardId}`] = count.toString();
     for (const [matchId, count] of this.matching) obj[`m${matchId}`] = count.toString();
     return obj;
@@ -168,22 +178,9 @@ class SubBucket implements DynamicKeyEntity<number>, CardSet {
 }
 
 export class SubBucketRepository extends Repository<SubBucket, number> {
-  protected prefix = 'SB:';
+  protected prefix = 'TEST:SB:';
 
-  createNew(root: number, matches: number[]) {
-    const cards = new Map([[root, 1]]);
-    const matchMap = new Map(matches.map((match) => [match, 1]));
-    const subBucket = new SubBucket(this.context, cards, matchMap, root, true);
-    this.context.cardSubBucketRepository.create(root, subBucket);
-    return subBucket;
-  }
-
-  save(e: SubBucket) {
-    this.context.transaction.del(`${this.prefix}${e.key.toString()}`);
-    return super.save(e);
-  }
-
-  fromRedis(obj: Record<string, string>, key: number) {
+  fromRedis(obj: Record<string, string>, key: number): SubBucket {
     const cards: Map<number, number> = new Map();
     const matches: Map<number, number> = new Map();
     let bucketSetId = key;
@@ -192,9 +189,21 @@ export class SubBucketRepository extends Repository<SubBucket, number> {
       const value = +obj[key];
       if (type === 'c') cards.set(id, value);
       else if (type === 'm') matches.set(id, value);
-      else if (key === 'sb') bucketSetId = value;
+      else if (key === 'bs') bucketSetId = value;
       else throw new Error(`Invalid key ${key} loading SubBucket`);
     }
     return new SubBucket(this.context, cards, matches, bucketSetId, false);
+  }
+  createNew(root: number, matches: number[]): SubBucket {
+    const cards = new Map([[root, 1]]);
+    const matchMap = new Map(matches.map((match) => [match, 1]));
+    const subBucket = new SubBucket(this.context, cards, matchMap, root, true);
+    this.context.cardSubBucketRepository.create(root, subBucket);
+    return subBucket;
+  }
+
+  save(e: SubBucket): Promise<unknown> {
+    this.context.transaction.del(this.prefix + e.key);
+    return super.save(e);
   }
 }

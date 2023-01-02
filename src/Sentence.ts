@@ -1,7 +1,14 @@
 import { createHash } from 'crypto';
 import { commandOptions } from 'redis';
-import { BaseEntity, RedisContext, Repository, SentenceMatch } from '.';
+import { SentenceMatch } from './duplicate';
+import { BaseEntity, RedisContext, Repository } from './redis';
 
+/*
+  Data about sentences is stored inside binary strings
+  Sentences are split into buckets so the performances is reasonable
+  Each bucket contains a sequence of 11 byte blocks containing information
+  First 5 bytes are the key of the sentence within the bucket, Next 4 bytes are card id, Last 2 bytes are index of sentence in card
+*/
 const paddedHex = (num: number, len: number) => num.toString(16).padStart(len, '0');
 class Sentence implements BaseEntity<string, string> {
   public key: string;
@@ -47,12 +54,9 @@ class Sentence implements BaseEntity<string, string> {
 }
 
 export class SentenceRepository extends Repository<Sentence, string> {
-  protected prefix = 'S:';
+  protected prefix = 'TEST:S:';
 
-  createNew(sentence: string, matches: SentenceMatch[]): Sentence {
-    return new Sentence(this.context, sentence, matches, true);
-  }
-  fromRedis(obj: { data: Buffer }, sentence: string) {
+  fromRedis(obj: { data: Buffer }, sentence: string): Sentence {
     const { data } = obj;
     if (!data) return new Sentence(this.context, sentence, []);
     if (data.length % 11 != 0) throw new Error(`Data for bucket ${sentence} has invalid length of ${data.length}`);
@@ -65,8 +69,11 @@ export class SentenceRepository extends Repository<Sentence, string> {
     }
     return new Sentence(this.context, sentence, matches);
   }
+  createNew(sentence: string, matches: SentenceMatch[]): Sentence {
+    return new Sentence(this.context, sentence, matches, true);
+  }
 
-  protected async loadRedis(sentence: string) {
+  protected async load(sentence: string): Promise<Sentence> {
     const { bucket } = Sentence.createKey(sentence);
     this.context.client.watch(this.prefix + bucket);
     const data = await this.context.client.get(commandOptions({ returnBuffers: true }), this.prefix + bucket);
@@ -75,7 +82,6 @@ export class SentenceRepository extends Repository<Sentence, string> {
     this.cache[sentence] = entity;
     return entity;
   }
-
   public async save(e: Sentence): Promise<unknown> {
     e.updated = false;
     return this.context.transaction.append(this.prefix + e.key, Buffer.from(e.toRedis(), 'hex'));
