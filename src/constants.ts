@@ -15,7 +15,9 @@ export const SHOULD_MATCH = (matching: number, total: number): boolean => matchi
 
 // Whether BucketSets which `matching` out of `total` cards should be merged
 // Also whether a card should be considered as a match for the purposes of merging
-export const SHOULD_MERGE = (matching: number, total: number): boolean => matching > 5 || matching / total >= 0.2;
+// export const SHOULD_MERGE = (matching: number, total: number): boolean => matching > 5 || matching / total >= 0.2;
+export const SHOULD_MERGE = (matching: number, total: number): boolean =>
+  matching > 5 ? matching / total >= 0.02 : matching / total >= 0.2;
 
 /* 
   Regex used to split text into sentences 
@@ -23,8 +25,6 @@ export const SHOULD_MERGE = (matching: number, total: number): boolean => matchi
   Will fail in some weird cases, but should be good enough
 */
 export const SENTENCE_REGEX = /([.?!])+(?=\d*\s+[A-Z])/;
-// Matches text inside quotes
-export const QUOTE_REGEX = /["“”]([^"]*)["“”]/g;
 
 // Wait between requests to caselist api in ms. Seems to be limited to 1500 requests every 15 minutes
 export const REQUEST_WAIT = 1000;
