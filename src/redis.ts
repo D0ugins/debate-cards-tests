@@ -24,13 +24,17 @@ export interface DynamicKeyEntity<K extends string | number, V = Record<string, 
 }
 
 export abstract class Repository<E extends BaseEntity<string | number, unknown>, K extends string | number> {
-  protected cache: Map<K, E | Promise<E>>;
+  private cache: Map<K, E | Promise<E>>;
   protected abstract prefix: string;
-  public deletions: Set<K>;
+  private _deletions: Set<K>;
 
   constructor(protected context: RedisContext) {
     this.cache = new Map();
-    this.deletions = new Set();
+    this._deletions = new Set();
+  }
+
+  get deletions(): ReadonlySet<K> {
+    return this._deletions;
   }
 
   protected getKeys(keys: K[]): Promise<Record<string, string>[]> {
@@ -76,7 +80,7 @@ export abstract class Repository<E extends BaseEntity<string | number, unknown>,
   }
   public delete(key: K): void {
     this.cache.set(key, null);
-    this.deletions.add(key);
+    this._deletions.add(key);
   }
 
   public async save(e: E): Promise<unknown> {
@@ -88,8 +92,8 @@ export abstract class Repository<E extends BaseEntity<string | number, unknown>,
   }
   public async saveAll(): Promise<unknown> {
     const updated = await this.getUpdated();
-    for (const key of this.deletions) this.context.transaction.del(this.prefix + key);
-    this.deletions = new Set();
+    for (const key of this._deletions) this.context.transaction.del(this.prefix + key);
+    this._deletions = new Set();
     return Promise.all(updated.map((entity) => this.save(entity)));
   }
 }

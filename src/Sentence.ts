@@ -78,9 +78,7 @@ export class SentenceRepository extends Repository<Sentence, string> {
     this.context.client.watch(this.prefix + bucket);
     const data = await this.context.client.get(commandOptions({ returnBuffers: true }), this.prefix + bucket);
 
-    const entity = data ? this.fromRedis({ data }, sentence) : new Sentence(this.context, sentence, []);
-    this.cache[sentence] = entity;
-    return entity;
+    return data ? this.fromRedis({ data }, sentence) : new Sentence(this.context, sentence, []);
   }
   public async save(e: Sentence): Promise<unknown> {
     e.updated = false;
