@@ -25,23 +25,50 @@ function shouldMerge(small: CardSet, large: CardSet) {
   return checkAdd(small, large) || checkAdd(large, small);
 }
 
+class ExploringSet {
+  // Map of cards to index
+  private cardSetMap: Map<CardSet, bigint>;
+  private visited: Set<bigint>;
+  constructor(bucketSets: readonly CardSet[]) {
+    this.cardSetMap = new Map();
+    bucketSets.forEach((cardSet, index) => this.cardSetMap.set(cardSet, BigInt(index)));
+    this.visited = new Set();
+  }
+
+  private hash(state: readonly CardSet[]) {
+    let number = 0n;
+    for (const cardSet of state) {
+      number |= 1n << this.cardSetMap.get(cardSet);
+    }
+    return number;
+  }
+
+  add(cardSets: readonly CardSet[]) {
+    this.visited.add(this.hash(cardSets));
+  }
+
+  has(cardSets: readonly CardSet[]) {
+    return this.visited.has(this.hash(cardSets));
+  }
+}
+
 /**
  * Check if it is possible to build BucketSet one bucket at a time starting from a given cardSet.
  * Does a depth first search, adding one bucket to the included set at a time
  */
-function tryBuild(included: CardSet, excluded: readonly CardSet[]) {
+function tryBuild(included: CardSet, excluded: readonly CardSet[], visited: ExploringSet) {
+  visited.add(excluded);
   // When only excluded bucket, if it can be added were done
   if (excluded.length === 1) return shouldMerge(included, excluded[0]);
 
+  // If there is a bucket that dosent match even if everything it matches is included, this path cant work
+  if (excluded.find((cardSet) => !SHOULD_MERGE(cardSet.matching.size, included.size))) return false;
+
   const canidates = excluded.filter((cardSet) => shouldMerge(cardSet, included));
   for (const canidate of canidates) {
-    if (
-      tryBuild(
-        mergeCardSets([included, canidate]),
-        filter(excluded, (bucket) => bucket !== canidate),
-      )
-    )
-      return true;
+    const rest = filter(excluded, (bucket) => bucket !== canidate);
+    if (visited.has(rest)) continue;
+    if (tryBuild(mergeCardSets([included, canidate]), rest, visited)) return true;
   }
   return false;
 }
@@ -109,10 +136,12 @@ class BucketSet implements DynamicKeyEntity<number, string[]> {
   async shouldMerge(other: BucketSet): Promise<boolean> {
     const thisSubBuckets = await this.getSubBuckets();
     const otherSubBuckets = await other.getSubBuckets();
+    const larger = thisSubBuckets.length > otherSubBuckets.length ? thisSubBuckets : otherSubBuckets;
+    const smaller = thisSubBuckets.length > otherSubBuckets.length ? otherSubBuckets : thisSubBuckets;
     // Technically, a path could exist that this misses, but it is unlikely and very expensive to check
     return (
-      tryBuild(mergeCardSets(thisSubBuckets), otherSubBuckets) &&
-      tryBuild(mergeCardSets(otherSubBuckets), thisSubBuckets)
+      tryBuild(mergeCardSets(larger), smaller, new ExploringSet([...thisSubBuckets, ...otherSubBuckets])) &&
+      tryBuild(mergeCardSets(smaller), larger, new ExploringSet([...thisSubBuckets, ...otherSubBuckets]))
     );
   }
 
@@ -136,7 +165,7 @@ class BucketSet implements DynamicKeyEntity<number, string[]> {
       if (matchList.length === subBuckets.length - 1) continue;
 
       const excluded = subBuckets.filter((b) => b !== subBucket);
-      if (!tryBuild(subBucket, excluded)) return subBucket;
+      if (!tryBuild(subBucket, excluded, new ExploringSet(subBuckets))) return subBucket;
     }
 
     return null;
@@ -158,7 +187,7 @@ class BucketSet implements DynamicKeyEntity<number, string[]> {
 }
 
 export class BucketSetRepository extends Repository<BucketSet, number> {
-  protected prefix = 'TEST:BS:';
+  protected prefix = 'BS:';
 
   async fromRedis({ subBucketIds }: { subBucketIds: number[] }): Promise<BucketSet> {
     return new BucketSet(this.context, subBucketIds, true);
