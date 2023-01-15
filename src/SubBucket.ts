@@ -2,7 +2,7 @@ import { intersection } from 'lodash';
 import { getMatching } from './duplicate';
 import { DynamicKeyEntity, RedisContext, Repository } from './redis';
 import { SHOULD_MATCH } from './constants';
-import { db, dedupQueue } from '.';
+import { dedupQueue } from '.';
 
 export interface CardSet {
   size: number;
