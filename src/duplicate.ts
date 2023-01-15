@@ -1,4 +1,4 @@
-import { EDGE_TOLERANCE, SENTENCE_REGEX } from './constants';
+import { EDGE_TOLERANCE, MIN_COUNT_FRACTION, SENTENCE_REGEX } from './constants';
 import { RedisContext, redis } from './redis';
 import { db } from '.';
 import { SubBucketEntity } from './SubBucket';
@@ -8,12 +8,13 @@ import { maxBy, uniq } from 'lodash';
 export type SentenceMatch = { matchId: number; index: number };
 
 type MatchInfo = { cardLen: number; min: number; max: number };
-type MatchPair = { a: MatchInfo; b: MatchInfo };
+type MatchPair = { matchCount: number; a: MatchInfo; b: MatchInfo };
 const surroundRegex = (starting: string, ending: string) => new RegExp(`[${starting}]+[^${ending}]*[${ending}]+`, 'g');
 export const getSentences = (text: string, cutoff = 20): string[] => {
   if (!text) return [];
   return text
     .replaceAll('¶', '\n')
+    .replaceAll(/([A-Z]\.)+/g, (match) => match.replaceAll('.', '')) // Remove acronyms like A.B.C.
     .replaceAll(/(\w+['‘’]\w+)|(\w+s['‘’]\s)/g, (match) => match.replaceAll(/['‘’]/g, '')) // Remove ' from contractions and words ending in s'
     .replaceAll(surroundRegex(`"“`, `"”`), (match) => (/[.!?]/g.test(match) ? '. ' : match)) // Remove multiple sentence double quoted text
     .replaceAll(surroundRegex(`'‘`, `'’`), (match) => (/[.!?]/g.test(match) ? '. ' : match)) // Remove multiple sentence single quoted text
@@ -24,9 +25,13 @@ export const getSentences = (text: string, cutoff = 20): string[] => {
 };
 
 const isMatch = ({
+  matchCount,
   a: { cardLen: aLen, min: aMin, max: aMax },
   b: { cardLen: bLen, min: bMin, max: bMax },
 }: MatchPair) => {
+  // Must match a minimum amount of each card
+  if (matchCount < Math.max(aLen, bLen) * MIN_COUNT_FRACTION) return false;
+
   // Allow a percentage of non-matches at the edges to account for bad ocr and small parsing errors
   const aTolerance = Math.ceil(aLen * EDGE_TOLERANCE);
   const bTolerance = Math.ceil(bLen * EDGE_TOLERANCE);
@@ -63,12 +68,15 @@ export async function getMatching(
       if (matchId === cardId) continue;
       if (!matchInfo.has(matchId))
         matchInfo.set(matchId, {
+          matchCount: 1,
           a: { cardLen: sentenceEntities.length, min: aIndex, max: aIndex },
           b: { cardLen: cardLens.get(matchId), min: bIndex, max: bIndex },
         });
       else {
-        matchInfo.get(matchId).a.max = aIndex;
-        matchInfo.get(matchId).b.max = bIndex;
+        const match = matchInfo.get(matchId);
+        match.a.max = aIndex;
+        match.b.max = bIndex;
+        match.matchCount++;
       }
     }
   }
