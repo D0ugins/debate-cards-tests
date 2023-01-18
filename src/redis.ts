@@ -1,5 +1,5 @@
 import { createClient } from 'redis';
-import { identity, isEmpty, uniq } from 'lodash';
+import { uniq } from 'lodash';
 import { CONCURRENT_DEDUPLICATION } from './constants';
 
 export const redis = createClient({
