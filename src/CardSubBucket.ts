@@ -1,7 +1,7 @@
 import { BaseEntity, EntityManager, RedisContext } from './redis';
 import { SubBucket } from './SubBucket';
 
-class CardSubBucket implements BaseEntity<number> {
+class CardSubBucket implements BaseEntity<number, string | undefined> {
   constructor(
     public context: RedisContext,
     public key: number,
@@ -18,18 +18,18 @@ class CardSubBucket implements BaseEntity<number> {
   }
 
   toRedis() {
-    return { sb: this.subBucket?.key.toString() };
+    return this.subBucket?.key.toString();
   }
 }
 export type { CardSubBucket };
 
 export class CardSubBucketManager implements EntityManager<CardSubBucket, number> {
-  public prefix = 'TEST:C:';
+  public prefix = 'TEST:CL:';
   constructor(public context: RedisContext) {}
 
   loadKeys(prefixedKeys: string[]): Promise<string[]> {
     this.context.client.watch(prefixedKeys);
-    return Promise.all(prefixedKeys.map((key) => this.context.client.hGet(key, 'sb')));
+    return this.context.client.mGet(prefixedKeys);
   }
   async parse(subBucketId: string, key: number): Promise<CardSubBucket> {
     return new CardSubBucket(this.context, key, false, await this.context.subBucketRepository.get(+subBucketId));
@@ -38,6 +38,6 @@ export class CardSubBucketManager implements EntityManager<CardSubBucket, number
     return new CardSubBucket(this.context, key, true, subBucket);
   }
   save(entity: CardSubBucket): unknown {
-    return this.context.transaction.hSet(this.prefix + entity.key, 'sb', entity.toRedis().sb);
+    return this.context.transaction.set(this.prefix + entity.key, entity.toRedis());
   }
 }

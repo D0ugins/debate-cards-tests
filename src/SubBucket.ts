@@ -10,7 +10,7 @@ export interface CardSet {
   matching: ReadonlyMap<number, number>;
 }
 
-class SubBucket implements DynamicKeyEntity<number>, CardSet {
+class SubBucket implements DynamicKeyEntity<number, Record<string, string>>, CardSet {
   public key: number;
   constructor(
     public context: RedisContext,
@@ -104,9 +104,7 @@ class SubBucket implements DynamicKeyEntity<number>, CardSet {
   async removeCard(id: number) {
     this.updated = true;
     this._cards.delete(id);
-    /* TMP */
-    // this.context.cardSubBucketRepository.delete(id);
-    this.context.transaction.hDel('TEST:C:' + id, 'sb');
+    this.context.cardSubBucketRepository.delete(id);
 
     for (const match of (await getMatching(this.context, id)).matches) {
       const counter = this.cards.has(match) ? this._cards : this._matching;

@@ -11,14 +11,14 @@ export const redis = createClient({
 export type RedisType = typeof redis;
 export type RedisTransaction = ReturnType<RedisType['multi']>;
 
-export interface BaseEntity<K extends string | number, V = Record<string, string>> {
+export interface BaseEntity<K extends string | number, V> {
   context: RedisContext;
   updated: boolean;
   key: K;
   toRedis(): V;
 }
 
-export interface DynamicKeyEntity<K extends string | number, V = Record<string, string>> extends BaseEntity<K, V> {
+export interface DynamicKeyEntity<K extends string | number, V> extends BaseEntity<K, V> {
   createKey(): K;
   propogateKey(): Promise<unknown>;
 }
