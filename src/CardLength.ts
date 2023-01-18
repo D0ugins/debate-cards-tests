@@ -23,7 +23,7 @@ class CardLength implements BaseEntity<number, string> {
 export type { CardLength };
 
 export class CardLengthManager implements EntityManager<CardLength, number> {
-  public prefix = 'TEST:CSB:';
+  public prefix = 'TEST:CL:';
   constructor(public context: RedisContext) {}
 
   loadKeys(prefixedKeys: string[]): Promise<string[]> {

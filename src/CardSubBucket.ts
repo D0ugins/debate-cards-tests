@@ -24,7 +24,7 @@ class CardSubBucket implements BaseEntity<number, string | undefined> {
 export type { CardSubBucket };
 
 export class CardSubBucketManager implements EntityManager<CardSubBucket, number> {
-  public prefix = 'TEST:CL:';
+  public prefix = 'TEST:CSB:';
   constructor(public context: RedisContext) {}
 
   loadKeys(prefixedKeys: string[]): Promise<string[]> {
