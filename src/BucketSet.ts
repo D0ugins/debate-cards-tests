@@ -226,6 +226,7 @@ export class BucketSetManager implements EntityManager<BucketSet, number> {
   constructor(public context: RedisContext) {}
 
   async loadKeys(prefixedKeys: string[], rawKeys: string[]): Promise<string[][]> {
+    this.context.client.watch(prefixedKeys);
     return Promise.all(
       prefixedKeys.map(async (key, i) => {
         const members = await this.context.client.sMembers(key);

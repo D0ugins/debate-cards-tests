@@ -173,6 +173,7 @@ export class SubBucketManager implements EntityManager<SubBucket, number> {
   constructor(public context: RedisContext) {}
 
   loadKeys(prefixedKeys: string[]): Promise<Record<string, string>[]> {
+    this.context.client.watch(prefixedKeys);
     return Promise.all(prefixedKeys.map((key) => this.context.client.hGetAll(key)));
   }
   parse(loadedValue: Record<string, string>, key: number): SubBucket {

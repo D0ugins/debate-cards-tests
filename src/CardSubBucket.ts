@@ -28,6 +28,7 @@ export class CardSubBucketManager implements EntityManager<CardSubBucket, number
   constructor(public context: RedisContext) {}
 
   loadKeys(prefixedKeys: string[]): Promise<string[]> {
+    this.context.client.watch(prefixedKeys);
     return Promise.all(prefixedKeys.map((key) => this.context.client.hGet(key, 'sb')));
   }
   async parse(subBucketId: string, key: number): Promise<CardSubBucket> {

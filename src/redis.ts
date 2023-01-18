@@ -49,7 +49,6 @@ export class Repository<E extends BaseEntity<string | number, unknown>, K extend
     const notInCache = keys.filter((key) => !this.cache.has(key));
     const prefixedKeys = notInCache.map((key) => this.entityMangaer.prefix + key);
     if (prefixedKeys.length) {
-      this.entityMangaer.context.client.watch(prefixedKeys);
       const loadValues = this.entityMangaer.loadKeys(prefixedKeys, notInCache.map(String));
 
       notInCache.forEach((key, i) =>

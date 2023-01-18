@@ -60,6 +60,7 @@ export class SentenceManager implements EntityManager<Sentence, string> {
 
   async loadKeys(_: string[], rawKeys: string[]): Promise<Buffer[]> {
     const prefixedKeys = rawKeys.map((sentence) => this.prefix + Sentence.createKey(sentence).bucket);
+    this.context.client.watch(prefixedKeys);
     const responses = await this.context.client.mGet(commandOptions({ returnBuffers: true }), prefixedKeys);
     return responses.map((buf) => buf ?? Buffer.from([]));
   }
