@@ -1,7 +1,7 @@
 import { EDGE_TOLERANCE, MIN_COUNT_FRACTION, SENTENCE_REGEX } from './constants';
 import { RedisContext, redis } from './redis';
 import { db } from '.';
-import { SubBucketEntity } from './SubBucket';
+import { SubBucket } from './SubBucket';
 import { WatchError } from 'redis';
 import { maxBy, uniq } from 'lodash';
 
@@ -90,7 +90,7 @@ export async function getMatching(
 export const loadSentences = async (id: number): Promise<string[]> => {
   if (!id) return [];
   const card = await db.evidence.findUnique({ where: { id }, select: { id: true, fulltext: true } });
-  if (!card?.fulltext) throw new Error(`Card with id ${id} does not exist`);
+  if (!card) throw new Error(`Card with id ${id} does not exist`);
 
   return getSentences(card.fulltext);
 };
@@ -104,7 +104,7 @@ export type Updates = {
 };
 
 // Does depth first search for all buckets that a card could have affected
-async function getConnectedBuckets(context: RedisContext, visited: Set<SubBucketEntity>): Promise<Updates> {
+async function getConnectedBuckets(context: RedisContext, visited: Set<SubBucket>): Promise<Updates> {
   const visitedCards = new Set([...visited].flatMap((subBucket) => subBucket.members));
   const newMatches = uniq(
     [...visited].flatMap((card) => [...card.matching.keys()]).filter((id) => !visitedCards.has(id)),
@@ -160,7 +160,7 @@ export async function processCard(id: number, sentences: string[]): Promise<Upda
         bucketCandidates.forEach((b) => b.setMatches(id, matchedCards));
         const matchedBuckets = bucketCandidates.filter((b) => b.doesBucketMatch(matchedCards));
 
-        let addBucket: SubBucketEntity;
+        let addBucket: SubBucket;
         if (!matchedBuckets.length) {
           addBucket = context.subBucketRepository.create(id, matchedCards);
         } else {

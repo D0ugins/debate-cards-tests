@@ -1,4 +1,4 @@
-import { BaseEntity, RedisContext, Repository } from './redis';
+import { BaseEntity, EntityManager, RedisContext } from './redis';
 
 class CardLength implements BaseEntity<number> {
   constructor(
@@ -20,14 +20,22 @@ class CardLength implements BaseEntity<number> {
     return { l: this.length.toString() };
   }
 }
+export type { CardLength };
 
-export class CardLengthRepository extends Repository<CardLength, number> {
-  protected prefix = 'TEST:C:';
+export class CardLengthManager implements EntityManager<CardLength, number> {
+  public prefix = 'TEST:C:';
+  constructor(public context: RedisContext) {}
 
-  async fromRedis(obj: { l: string; sb: string }, key: number): Promise<CardLength> {
-    return new CardLength(this.context, key, false, +obj.l);
+  loadKeys(prefixedKeys: string[]): Promise<string[]> {
+    return Promise.all(prefixedKeys.map((key) => this.context.client.hGet(key, 'l')));
   }
-  createNew(key: number, length: number): CardLength {
+  parse(length: string, key: number): CardLength {
+    return new CardLength(this.context, key, false, +length);
+  }
+  create(key: number, length: number): CardLength {
     return new CardLength(this.context, key, true, length);
+  }
+  save(entity: CardLength): unknown {
+    return this.context.transaction.hSet(this.prefix + entity.key, 'l', entity.toRedis().l);
   }
 }

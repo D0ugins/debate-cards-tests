@@ -1,12 +1,12 @@
-import { BaseEntity, RedisContext, Repository } from './redis';
-import { SubBucketEntity } from './SubBucket';
+import { BaseEntity, EntityManager, RedisContext } from './redis';
+import { SubBucket } from './SubBucket';
 
 class CardSubBucket implements BaseEntity<number> {
   constructor(
     public context: RedisContext,
     public key: number,
     public updated: boolean = false,
-    private _subBucket: SubBucketEntity,
+    private _subBucket: SubBucket,
   ) {}
 
   get subBucket() {
@@ -21,21 +21,22 @@ class CardSubBucket implements BaseEntity<number> {
     return { sb: this.subBucket?.key.toString() };
   }
 }
+export type { CardSubBucket };
 
-export class CardSubBucketRepository extends Repository<CardSubBucket, number> {
-  protected prefix = 'TEST:C:';
+export class CardSubBucketManager implements EntityManager<CardSubBucket, number> {
+  public prefix = 'TEST:C:';
+  constructor(public context: RedisContext) {}
 
-  async fromRedis(obj: { sb: string }, key: number): Promise<CardSubBucket> {
-    if (!obj.sb) return null;
-    return new CardSubBucket(this.context, key, false, await this.context.subBucketRepository.get(+obj.sb));
+  loadKeys(prefixedKeys: string[]): Promise<string[]> {
+    return Promise.all(prefixedKeys.map((key) => this.context.client.hGet(key, 'sb')));
   }
-  createNew(key: number, subBucket: SubBucketEntity): CardSubBucket {
+  async parse(subBucketId: string, key: number): Promise<CardSubBucket> {
+    return new CardSubBucket(this.context, key, false, await this.context.subBucketRepository.get(+subBucketId));
+  }
+  create(key: number, subBucket: SubBucket): CardSubBucket {
     return new CardSubBucket(this.context, key, true, subBucket);
   }
-
-  async reset(key: number): Promise<void> {
-    this.context.transaction.hDel(this.prefix + key, 'sb');
-    const entity = await this.get(key);
-    if (entity) entity.subBucket = null;
+  save(entity: CardSubBucket): unknown {
+    return this.context.transaction.hSet(this.prefix + entity.key, 'sb', entity.toRedis().sb);
   }
 }
