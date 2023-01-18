@@ -224,7 +224,7 @@ class BucketSet implements DynamicKeyEntity<number, string[]> {
 }
 
 export class BucketSetRepository extends Repository<BucketSet, number> {
-  protected prefix = 'BS:';
+  protected prefix = 'TEST:BS:';
 
   async fromRedis({ subBucketIds }: { subBucketIds: number[] }): Promise<BucketSet> {
     return new BucketSet(this.context, subBucketIds, true);
