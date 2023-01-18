@@ -3,9 +3,9 @@ import { Queue } from 'typescript-collections';
 import { RedisContext, redis } from './redis';
 import { readFile, writeFile } from 'fs/promises';
 import { uniq } from 'lodash';
-import { loadSentences, processCard } from './duplicate';
+import { getMatching, loadSentences, processCard } from './duplicate';
 
-export const BUCKETID = 970324;
+export const BUCKETID = 33934;
 export const dedupQueue = new Queue<number>();
 export const db = new PrismaClient();
 export type TagInput = {
@@ -18,7 +18,7 @@ export const connectOrCreateTag = ({ name, label }: TagInput): Prisma.TagCreateO
 });
 
 const drain = async () => {
-  if (dedupQueue.size() % 10 == 0) console.timeLog('dedup', dedupQueue.size());
+  if (dedupQueue.size() % 1000 == 0) console.timeLog('dedup', dedupQueue.size());
 
   const id = dedupQueue.dequeue();
   if (!id) {
@@ -34,19 +34,32 @@ const drain = async () => {
   setImmediate(drain);
 };
 
-const loadCards = (id: number = BUCKETID) =>
+const loadBucket = (id: number = BUCKETID) =>
   db.evidence.findMany({
     where: { bucketId: id },
     select: { id: true },
     orderBy: { id: 'asc' },
   });
+const loadCards = (take = 10_000, skip = 0) =>
+  db.evidence.findMany({
+    select: { id: true },
+    orderBy: { id: 'asc' },
+    take,
+    skip,
+  });
+
+const loadOpenEv = (take?: number) =>
+  db.evidence.findMany({
+    where: { file: { tags: { some: { name: 'openev' } } } },
+    select: { id: true },
+    orderBy: { id: 'asc' },
+    take,
+  });
 
 async function dedup() {
-  const keys = [];
-  for await (const key of redis.scanIterator({ MATCH: 'TEST:*' })) {
-    keys.push(key);
-  }
+  const keys = await redis.keys('TEST:*');
   if (keys.length) await redis.del(keys);
+  console.log('Deleted tests');
   const ids = await loadCards();
   for (const { id } of ids) dedupQueue.add(id);
   console.time('dedup');
@@ -54,13 +67,14 @@ async function dedup() {
 }
 
 async function membership(useBucketSet: boolean) {
-  const ids = await loadCards();
+  const ids = await loadBucket();
   const { cardSubBucketRepository } = new RedisContext(redis);
 
   const memberships = new Map<number, number[]>();
   await Promise.all(
     ids.map(async ({ id }) => {
-      const { subBucket } = await cardSubBucketRepository.get(id);
+      const { subBucket } = (await cardSubBucketRepository.get(id)) ?? { subBucket: null };
+      if (!subBucket) return;
       const parent = useBucketSet ? (await subBucket.getBucketSet()).key : subBucket.key;
       if (!memberships.has(parent)) memberships.set(parent, []);
       memberships.get(parent).push(id);
@@ -91,7 +105,7 @@ async function movePy() {
 }
 
 async function broken() {
-  const ids = await loadCards();
+  const ids = await loadBucket();
   const context = new RedisContext(redis);
 
   const subBuckets = uniq(
@@ -103,6 +117,12 @@ async function broken() {
   }
 }
 
+async function matchCounts(context: RedisContext, ids: number[]) {
+  return new Map(
+    await Promise.all(ids.map(async (id) => [id, (await getMatching(context, id)).matches.length] as [number, number])),
+  );
+}
+
 (async () => {
   console.log('Started');
   await redis.connect();
@@ -112,6 +132,5 @@ async function broken() {
   // const context = new RedisContext(redis);
   // await membership(false);
   // await membership(true);
-
-  // await redis.disconnect();
+  // await redis.quit();
 })();
