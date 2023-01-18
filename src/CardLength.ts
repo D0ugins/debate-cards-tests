@@ -2,20 +2,11 @@ import { BaseEntity, EntityManager, RedisContext } from './redis';
 
 class CardLength implements BaseEntity<number, string> {
   constructor(
-    public context: RedisContext,
+    public readonly context: RedisContext,
     public key: number,
     public updated: boolean = false,
-    private _length: number,
+    public readonly length: number,
   ) {}
-
-  get length() {
-    return this._length;
-  }
-  set length(value) {
-    this.updated = true;
-    this._length = value;
-  }
-
   toRedis() {
     return this.length.toString();
   }
@@ -23,8 +14,8 @@ class CardLength implements BaseEntity<number, string> {
 export type { CardLength };
 
 export class CardLengthManager implements EntityManager<CardLength, number> {
-  public prefix = 'TEST:CL:';
-  constructor(public context: RedisContext) {}
+  public readonly prefix = 'TEST:CL:';
+  constructor(public readonly context: RedisContext) {}
 
   loadKeys(prefixedKeys: string[]): Promise<string[]> {
     this.context.client.watch(prefixedKeys);

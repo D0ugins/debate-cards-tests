@@ -12,7 +12,7 @@ export type RedisType = typeof redis;
 export type RedisTransaction = ReturnType<RedisType['multi']>;
 
 export interface BaseEntity<K extends string | number, V> {
-  context: RedisContext;
+  readonly context: RedisContext;
   updated: boolean;
   key: K;
   toRedis(): V;
@@ -24,8 +24,8 @@ export interface DynamicKeyEntity<K extends string | number, V> extends BaseEnti
 }
 
 export interface EntityManager<E extends BaseEntity<string | number, unknown>, K extends string | number> {
-  prefix: string;
-  context: RedisContext;
+  readonly context: RedisContext;
+  readonly prefix: string;
   loadKeys(prefixedKeys: string[], rawKeys: string[]): Promise<unknown[]>;
   parse(loadedValue: unknown, key: K): E | Promise<E>;
   create(key: K, ...args: any[]): E;

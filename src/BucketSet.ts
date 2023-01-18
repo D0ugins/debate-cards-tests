@@ -111,7 +111,7 @@ export type BucketSetEntity = BucketSet;
 class BucketSet implements DynamicKeyEntity<number, string[]> {
   private _subBucketIds: Set<number>;
   public key: number;
-  constructor(public context: RedisContext, subBucketIds: number[], public updated: boolean = false) {
+  constructor(public readonly context: RedisContext, subBucketIds: number[], public updated: boolean = false) {
     this._subBucketIds = new Set(subBucketIds);
     this.key = this.createKey();
   }
@@ -222,8 +222,8 @@ class BucketSet implements DynamicKeyEntity<number, string[]> {
 export type { BucketSet };
 
 export class BucketSetManager implements EntityManager<BucketSet, number> {
-  public prefix = 'TEST:BS:';
-  constructor(public context: RedisContext) {}
+  public readonly prefix = 'TEST:BS:';
+  constructor(public readonly context: RedisContext) {}
 
   async loadKeys(prefixedKeys: string[], rawKeys: string[]): Promise<string[][]> {
     this.context.client.watch(prefixedKeys);

@@ -13,11 +13,9 @@ export interface CardSet {
 class SubBucket implements DynamicKeyEntity<number, Record<string, string>>, CardSet {
   public key: number;
   constructor(
-    public context: RedisContext,
-    // Map of cardIds in bucket to how many cards in the bucket they match
-    private _cards: Map<number, number>,
-    // Same as _cards, but for cards not in the bucket
-    private _matching: Map<number, number>,
+    public readonly context: RedisContext,
+    private readonly _cards: Map<number, number>,
+    private readonly _matching: Map<number, number>,
     private _bucketSetId: number,
     public updated: boolean = false,
   ) {
@@ -51,9 +49,11 @@ class SubBucket implements DynamicKeyEntity<number, Record<string, string>>, Car
     return this.cards.size;
   }
 
+  /** Map of cardIds in bucket to how many cards in the bucket they match */
   get cards(): ReadonlyMap<number, number> {
     return this._cards;
   }
+  /** Map of cardIds not in bucket to how many cards in the bucket they matcht */
   get matching(): ReadonlyMap<number, number> {
     return this._matching;
   }
@@ -170,8 +170,8 @@ class SubBucket implements DynamicKeyEntity<number, Record<string, string>>, Car
 export type { SubBucket };
 
 export class SubBucketManager implements EntityManager<SubBucket, number> {
-  public prefix = 'TEST:SB:';
-  constructor(public context: RedisContext) {}
+  public readonly prefix = 'TEST:SB:';
+  constructor(public readonly context: RedisContext) {}
 
   loadKeys(prefixedKeys: string[]): Promise<Record<string, string>[]> {
     this.context.client.watch(prefixedKeys);

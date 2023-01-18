@@ -11,13 +11,13 @@ import { BaseEntity, EntityManager, RedisContext } from './redis';
 */
 const paddedHex = (num: number, len: number) => num.toString(16).padStart(len, '0');
 class Sentence implements BaseEntity<string, string> {
-  public key: string;
-  public subKey: string;
+  public readonly key: string;
+  public readonly subKey: string;
   private _additions: SentenceMatch[];
   constructor(
-    public context: RedisContext,
-    public sentence: string,
-    private _matches: SentenceMatch[],
+    public readonly context: RedisContext,
+    public readonly sentence: string,
+    private _loadedMatches: SentenceMatch[],
     public updated: boolean = false,
   ) {
     const { bucket, subKey } = Sentence.createKey(sentence);
@@ -34,7 +34,7 @@ class Sentence implements BaseEntity<string, string> {
   }
 
   get matches(): readonly SentenceMatch[] {
-    return this._matches.concat(this._additions);
+    return this._loadedMatches.concat(this._additions);
   }
 
   get additions(): readonly SentenceMatch[] {
@@ -55,8 +55,8 @@ class Sentence implements BaseEntity<string, string> {
 export type { Sentence };
 
 export class SentenceManager implements EntityManager<Sentence, string> {
-  public prefix = 'TEST:S:';
-  constructor(public context: RedisContext) {}
+  public readonly prefix = 'TEST:S:';
+  constructor(public readonly context: RedisContext) {}
 
   async loadKeys(_: string[], rawKeys: string[]): Promise<Buffer[]> {
     const prefixedKeys = rawKeys.map((sentence) => this.prefix + Sentence.createKey(sentence).bucket);

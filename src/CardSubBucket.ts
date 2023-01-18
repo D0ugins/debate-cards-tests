@@ -3,7 +3,7 @@ import { SubBucket } from './SubBucket';
 
 class CardSubBucket implements BaseEntity<number, string | undefined> {
   constructor(
-    public context: RedisContext,
+    public readonly context: RedisContext,
     public key: number,
     public updated: boolean = false,
     private _subBucket: SubBucket,
@@ -24,8 +24,8 @@ class CardSubBucket implements BaseEntity<number, string | undefined> {
 export type { CardSubBucket };
 
 export class CardSubBucketManager implements EntityManager<CardSubBucket, number> {
-  public prefix = 'TEST:CSB:';
-  constructor(public context: RedisContext) {}
+  public readonly prefix = 'TEST:CSB:';
+  constructor(public readonly context: RedisContext) {}
 
   loadKeys(prefixedKeys: string[]): Promise<string[]> {
     this.context.client.watch(prefixedKeys);
