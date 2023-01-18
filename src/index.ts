@@ -60,7 +60,7 @@ async function dedup() {
   const keys = await redis.keys('TEST:*');
   if (keys.length) await redis.del(keys);
   console.log('Deleted tests');
-  const ids = await loadCards();
+  const ids = await loadCards(100_000);
   for (const { id } of ids) dedupQueue.add(id);
   console.time('dedup');
   return drain();
